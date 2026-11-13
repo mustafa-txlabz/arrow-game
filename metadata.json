@@ -1,0 +1,6 @@
+{
+  "name": "Arrow Escape",
+  "description": "Mobile-first Tap Away puzzle game with infinite procedurally generated levels, skins, daily rewards, and neon-sleek home navigation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
