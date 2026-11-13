@@ -112,10 +112,13 @@ export function findEscapableArrow(
   return null;
 }
 
+export const MAX_GRID_SIZE = 32;
+export const POST_100_GRID_INTERVAL = 40;
+
 /**
- * Rapid progressive grid scaling modeled after original Arrow Escape progression:
- * Starts at a lively 6x6 board (~10-12 arrows) and expands smoothly through
- * 8x8, 10x10, 12x12, 14x14, 16x16, 18x18 (100+ arrows), 20x20, 22x22, up to 24x24 (160-185+ arrows).
+ * Infinite-level progressive grid scaling:
+ * - Lv 1–100: fast progression from 6x6 (~11 arrows) through 18x18 (100+ arrows) to 24x24 (~175 arrows).
+ * - Lv 101+: widens at 40-level intervals (26x26 -> 28x28 -> 30x30 -> 32x32 max cap at Lv 221+).
  */
 export function getGridSizeForLevel(level: number): number {
   const safeLevel = Math.max(1, Math.floor(level));
@@ -128,7 +131,10 @@ export function getGridSizeForLevel(level: number): number {
   if (safeLevel <= 40) return 18;
   if (safeLevel <= 55) return 20;
   if (safeLevel <= 75) return 22;
-  return 24;
+  if (safeLevel <= 100) return 24;
+
+  const post100Step = Math.floor((safeLevel - 101) / POST_100_GRID_INTERVAL) + 1;
+  return Math.min(MAX_GRID_SIZE, 24 + post100Step * 2);
 }
 
 function getTierProgress(level: number): { tier: number; tierProgress: number } {
@@ -143,11 +149,11 @@ function getTierProgress(level: number): { tier: number; tierProgress: number } 
     [31, 40],
     [41, 55],
     [56, 75],
-    [76, 120],
+    [76, 100],
   ];
   for (let i = 0; i < bounds.length; i++) {
     const [lo, hi] = bounds[i];
-    if (safeLevel <= hi || i === bounds.length - 1) {
+    if (safeLevel <= hi) {
       const span = Math.max(1, hi - lo);
       return {
         tier: i,
@@ -155,7 +161,20 @@ function getTierProgress(level: number): { tier: number; tierProgress: number } 
       };
     }
   }
-  return { tier: bounds.length - 1, tierProgress: 1 };
+  const postIdx = Math.floor((safeLevel - 101) / POST_100_GRID_INTERVAL);
+  const posInPost = (safeLevel - 101) % POST_100_GRID_INTERVAL;
+  const maxPostIdx = Math.floor((MAX_GRID_SIZE - 26) / 2);
+  if (postIdx >= maxPostIdx) {
+    // Cap tier at 32x32 while oscillating/climbing complexity within every 40-level infinite cycle
+    return {
+      tier: bounds.length + maxPostIdx,
+      tierProgress: posInPost / (POST_100_GRID_INTERVAL - 1),
+    };
+  }
+  return {
+    tier: bounds.length + postIdx,
+    tierProgress: posInPost / (POST_100_GRID_INTERVAL - 1),
+  };
 }
 
 export function getLevelDifficulty(level: number): Difficulty {
@@ -205,37 +224,35 @@ function getLevelTargets(level: number): LevelProgressionTargets {
   const safeLevel = Math.max(1, Math.floor(level));
   const gridSize = getGridSizeForLevel(safeLevel);
   const { tier, tierProgress } = getTierProgress(safeLevel);
-  const complexityFactor = Math.min(1, (safeLevel - 1) / 85);
+  const complexityFactor = Math.min(1, (safeLevel - 1) / 220);
 
   const totalCells = gridSize * gridSize;
 
-  // High-density wall-to-wall labyrinth occupancy: ~90% on Lv 1 climbing to ~95%-97%
+  // High-density wall-to-wall labyrinth occupancy: ~90% on Lv 1 climbing cleanly to ~94%-96%
   const baseFill =
     safeLevel === 1
       ? 0.9
       : safeLevel === 2
         ? 0.93
-        : Math.min(0.97, 0.935 + tierProgress * 0.025 + Math.min(0.015, tier * 0.002));
+        : Math.min(0.96, 0.93 + tierProgress * 0.02 + Math.min(0.012, tier * 0.001));
   const targetOccupied = Math.min(totalCells, Math.round(totalCells * baseFill));
 
-  // Target average arrow length tightens smoothly from ~3.4 on early boards to ~3.0-3.2 on giant boards
-  // Yielding: 6x6 -> 10-12, 8x8 -> 18-21, 10x10 -> 28-33, 12x12 -> 40-46, 14x14 -> 56-64,
-  //           16x16 -> 74-84, 18x18 -> 94-106 (100+!), 20x20 -> 115-128, 22x22 -> 140-156, 24x24 -> 165-185+
+  // Target average arrow length tightens smoothly from ~3.3 on early boards to ~2.95 on giant 26x26-32x32 boards
   const avgArrowLen =
     safeLevel === 1
       ? 3.3
-      : Math.max(2.95, 3.32 - tierProgress * 0.22 - complexityFactor * 0.14);
+      : Math.max(2.92, 3.32 - tierProgress * 0.18 - complexityFactor * 0.22);
   const targetArrows = Math.max(
     9,
     Math.round(targetOccupied / avgArrowLen)
   );
 
-  // Tight opening bottlenecks even on 100+ arrow boards
+  // Tight opening bottlenecks even on 200-330+ arrow boards
   const idealInitFree =
-    safeLevel <= 2 ? 3 : Math.max(2, Math.floor(gridSize * 0.45));
+    safeLevel <= 2 ? 3 : Math.max(2, Math.floor(gridSize * 0.42));
 
-  // Minimal 1-cell dots only as rare emergency pocket fillers on large grids
-  const maxOneCell = gridSize <= 8 ? 0 : Math.min(4, Math.floor(gridSize / 6));
+  // Keep 1-cell blockers minimal (<2.5% of arrows) just to seal isolated pockets on huge grids
+  const maxOneCell = gridSize <= 8 ? 0 : Math.min(8, Math.floor(gridSize / 4));
 
   return {
     gridSize,
@@ -564,7 +581,7 @@ function buildBoardAttempt(
   let oneCellCount = 0;
 
   const inwardTargetLen = Math.max(2, Math.floor(gridSize * 0.42));
-  const maxGuards = totalCells * (gridSize >= 16 ? 3 : 4);
+  const maxGuards = totalCells * 4;
   let guard = 0;
 
   const refreshUnblockedHotspots = () => {
@@ -747,86 +764,100 @@ function buildBoardAttempt(
     );
 
     const candidates: HeadCandidate[] = [];
-    const allowBlockedPoints = fillRatioNow >= 0.42;
+    const allowBlockedPoints = fillRatioNow >= 0.4;
 
-    for (let r = 0; r < gridSize; r++) {
-      for (let c = 0; c < gridSize; c++) {
-        const headIdx = r * gridSize + c;
-        if (occ[headIdx] !== -1) continue;
+    // Collect empty cells and sample up to sampleLimit on huge grids for fast O(N) performance
+    const emptyNow: number[] = [];
+    for (let i = 0; i < totalCells; i++) {
+      if (occ[i] === -1) emptyNow.push(i);
+    }
+    const sampleLimit = gridSize <= 14 ? emptyNow.length : gridSize <= 22 ? 120 : 100;
+    const scanCount = Math.min(emptyNow.length, sampleLimit);
+    if (emptyNow.length > sampleLimit) {
+      for (let i = 0; i < scanCount; i++) {
+        const swapIdx = i + Math.floor(rand() * (emptyNow.length - i));
+        const tmp = emptyNow[i];
+        emptyNow[i] = emptyNow[swapIdx];
+        emptyNow[swapIdx] = tmp;
+      }
+    }
 
-        const mHead = minRayOrder[headIdx];
-        const hotspotHead = unblockedHotspot[headIdx];
+    for (let sIdx = 0; sIdx < scanCount; sIdx++) {
+      const headIdx = emptyNow[sIdx];
+      const r = Math.floor(headIdx / gridSize);
+      const c = headIdx % gridSize;
+      const mHead = minRayOrder[headIdx];
+      const hotspotHead = unblockedHotspot[headIdx];
 
-        for (let dIdx = 0; dIdx < 4; dIdx++) {
-          const dr = DIR_DR[dIdx];
-          const dc = DIR_DC[dIdx];
+      for (let dIdx = 0; dIdx < 4; dIdx++) {
+        const dr = DIR_DR[dIdx];
+        const dc = DIR_DC[dIdx];
 
-          let rr = r + dr;
-          let cc = c + dc;
-          let maxBlockerOrder = -Infinity;
-          let rayLen = 0;
-          let blockerCount = 0;
+        let rr = r + dr;
+        let cc = c + dc;
+        let maxBlockerOrder = -Infinity;
+        let rayLen = 0;
+        let blockerCount = 0;
 
-          while (rr >= 0 && rr < gridSize && cc >= 0 && cc < gridSize) {
-            const o = occ[rr * gridSize + cc];
-            if (o !== -1) {
-              blockerCount += 1;
-              const ord = arrowOrder[o];
-              if (ord > maxBlockerOrder) maxBlockerOrder = ord;
-            }
-            rayLen += 1;
-            rr += dr;
-            cc += dc;
+        while (rr >= 0 && rr < gridSize && cc >= 0 && cc < gridSize) {
+          const o = occ[rr * gridSize + cc];
+          if (o !== -1) {
+            blockerCount += 1;
+            const ord = arrowOrder[o];
+            if (ord > maxBlockerOrder) maxBlockerOrder = ord;
           }
-
-          if (!allowBlockedPoints && blockerCount > 0) continue;
-          if (mHead <= maxBlockerOrder + 1e-4) continue;
-
-          const pr = r - dr;
-          const pc = c - dc;
-          let canExtend = false;
-          let hotspotPre = 0;
-          if (pr >= 0 && pr < gridSize && pc >= 0 && pc < gridSize) {
-            const preIdx = pr * gridSize + pc;
-            if (occ[preIdx] === -1 && minRayOrder[preIdx] > maxBlockerOrder + 1e-4) {
-              canExtend = true;
-              hotspotPre = unblockedHotspot[preIdx];
-            }
-          }
-
-          if (!canExtend) continue;
-
-          const rayScore =
-            rayLen === 0
-              ? -24
-              : rayLen === 1 && fillRatioNow < 0.72
-                ? -10
-                : Math.min(gridSize - 1, rayLen) * (fillRatioNow < 0.7 ? 2.4 : 1.1) +
-                  (rayLen >= inwardTargetLen ? 4 : 0);
-
-          const unblockedBonus =
-            (hotspotHead + hotspotPre) *
-            (archetype === 'short_key' ? 8.0 : 5.0 + complexityFactor * 3.5);
-          // Pointing into an existing earlier arrow adds depth without increasing initialFreeCount
-          const alreadyBlockedBonus = blockerCount > 0 ? 11 + complexityFactor * 6 : 0;
-
-          const score =
-            rayScore +
-            unblockedBonus +
-            alreadyBlockedBonus +
-            rand() * 2.2;
-
-          candidates.push({
-            hr: r,
-            hc: c,
-            pr,
-            pc,
-            dIdx,
-            maxBlockerOrder,
-            canExtend: true,
-            score,
-          });
+          rayLen += 1;
+          rr += dr;
+          cc += dc;
         }
+
+        if (!allowBlockedPoints && blockerCount > 0) continue;
+        if (mHead <= maxBlockerOrder + 1e-4) continue;
+
+        const pr = r - dr;
+        const pc = c - dc;
+        let canExtend = false;
+        let hotspotPre = 0;
+        if (pr >= 0 && pr < gridSize && pc >= 0 && pc < gridSize) {
+          const preIdx = pr * gridSize + pc;
+          if (occ[preIdx] === -1 && minRayOrder[preIdx] > maxBlockerOrder + 1e-4) {
+            canExtend = true;
+            hotspotPre = unblockedHotspot[preIdx];
+          }
+        }
+
+        if (!canExtend) continue;
+
+        const rayScore =
+          rayLen === 0
+            ? -24
+            : rayLen === 1 && fillRatioNow < 0.72
+              ? -10
+              : Math.min(gridSize - 1, rayLen) * (fillRatioNow < 0.7 ? 2.4 : 1.1) +
+                (rayLen >= inwardTargetLen ? 4 : 0);
+
+        const unblockedBonus =
+          (hotspotHead + hotspotPre) *
+          (archetype === 'short_key' ? 8.0 : 5.0 + complexityFactor * 3.5);
+        // Pointing into an existing earlier arrow adds depth without increasing initialFreeCount
+        const alreadyBlockedBonus = blockerCount > 0 ? 11 + complexityFactor * 6 : 0;
+
+        const score =
+          rayScore +
+          unblockedBonus +
+          alreadyBlockedBonus +
+          rand() * 2.2;
+
+        candidates.push({
+          hr: r,
+          hc: c,
+          pr,
+          pc,
+          dIdx,
+          maxBlockerOrder,
+          canExtend: true,
+          score,
+        });
       }
     }
 
@@ -1146,9 +1177,9 @@ function scoreAttempt(
 }
 
 /**
- * Generates a deterministic, progressive, guaranteed-solvable puzzle seeded strictly by `level`.
- * - Rapid progressive grid scaling from 6x6 (~10-12 arrows) up to 24x24 (160-185+ arrows).
- * - Cycle-free rank-based insertion packs 92-97% of every board with zero empty holes.
+ * Generates a deterministic, progressive, guaranteed-solvable infinite-level puzzle seeded strictly by `level`.
+ * - Lv 1–100: Scales rapidly from 6x6 (~11 arrows) through 18x18 (100+ arrows) to 24x24 (~175 arrows).
+ * - Lv 101+: Expands at 40-level intervals (26x26 -> 28x28 -> 30x30 -> 32x32 cap at Lv 221+, ~310-340+ arrows).
  */
 export function generateLevel(level: number): GeneratedLevel {
   const safeLevel = Math.max(1, Math.floor(level));
@@ -1161,7 +1192,13 @@ export function generateLevel(level: number): GeneratedLevel {
   let bestScore = scoreAttempt(best, targets);
 
   const attemptCount =
-    targets.gridSize <= 10 ? 14 : targets.gridSize <= 16 ? 8 : 5;
+    targets.gridSize <= 10
+      ? 12
+      : targets.gridSize <= 16
+        ? 7
+        : targets.gridSize <= 24
+          ? 4
+          : 3;
   for (let attempt = 1; attempt < attemptCount; attempt++) {
     const candidate = buildBoardAttempt(
       safeLevel,

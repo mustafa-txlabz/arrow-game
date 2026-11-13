@@ -103,7 +103,7 @@ export function GameplayScreen({
   const suppressTapUntilRef = useRef<number>(0);
 
   const maxZoomScale = useMemo(
-    () => Math.min(5.4, Math.max(2.4, generated.gridSize * 0.23)),
+    () => Math.min(7.2, Math.max(2.4, generated.gridSize * 0.23)),
     [generated.gridSize]
   );
 
@@ -206,9 +206,30 @@ export function GameplayScreen({
   );
 
   const cellStep = (BOARD_VIEWBOX - BOARD_PAD * 2) / generated.gridSize;
-  const strokeWidth = Math.min(5.0, Math.max(1.65, cellStep * 0.14));
-  const arrowTipScale = Math.min(1.22, Math.max(0.36, cellStep / 34));
-  const dotRadius = Math.min(2.3, Math.max(0.85, cellStep * 0.052));
+  const strokeWidth = Math.min(5.0, Math.max(1.25, cellStep * 0.145));
+  const arrowTipScale = Math.min(1.22, Math.max(0.28, cellStep / 33));
+  const dotRadius = Math.min(2.3, Math.max(0.65, cellStep * 0.052));
+
+  const gridDots = useMemo(
+    () =>
+      Array.from({ length: generated.gridSize * generated.gridSize }).map(
+        (_, index) => {
+          const r = Math.floor(index / generated.gridSize);
+          const c = index % generated.gridSize;
+          const { x, y } = cellCenter({ r, c }, cellStep);
+          return (
+            <circle
+              key={`dot-${r}-${c}`}
+              cx={x}
+              cy={y}
+              r={dotRadius}
+              fill="#CBD5E1"
+            />
+          );
+        }
+      ),
+    [generated.gridSize, cellStep, dotRadius]
+  );
 
   const handleRestartLevel = () => {
     feedback.playTap();
@@ -608,22 +629,7 @@ export function GameplayScreen({
               </defs>
 
               {/* Subtle Dotted Grid Matrix */}
-              {Array.from({ length: generated.gridSize * generated.gridSize }).map(
-                (_, index) => {
-                  const r = Math.floor(index / generated.gridSize);
-                  const c = index % generated.gridSize;
-                  const { x, y } = cellCenter({ r, c }, cellStep);
-                  return (
-                    <circle
-                      key={`dot-${r}-${c}`}
-                      cx={x}
-                      cy={y}
-                      r={dotRadius}
-                      fill="#CBD5E1"
-                    />
-                  );
-                }
-              )}
+              {gridDots}
 
               {/* Bent & Custom Path Arrows */}
               {arrows.map((arrow) => (

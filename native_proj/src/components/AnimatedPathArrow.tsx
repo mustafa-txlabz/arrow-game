@@ -288,7 +288,7 @@ export const AnimatedPathArrow = memo(function AnimatedPathArrow({
         d={geom.restD}
         fill="none"
         stroke="transparent"
-        strokeWidth={Math.max(9.5, Math.min(28, cellStep * 0.85))}
+        strokeWidth={Math.max(7.5, Math.min(28, cellStep * 0.85))}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
