@@ -80,6 +80,10 @@ export function GameplayScreen({
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
+  const arrowsRef = useRef<ArrowTile[]>(arrows);
+  const statusModalRef = useRef(statusModal);
+  arrowsRef.current = arrows;
+  statusModalRef.current = statusModal;
   const suppressTapUntilRef = useRef<number>(0);
 
   const heartsShakeAnim = useRef(new RNAnimated.Value(0)).current;
@@ -97,7 +101,7 @@ export function GameplayScreen({
   const pinchStartFy = useSharedValue(0);
 
   const maxZoomScale = useMemo(
-    () => Math.min(3.6, Math.max(2.2, generated.gridSize * 0.42)),
+    () => Math.min(5.4, Math.max(2.4, generated.gridSize * 0.23)),
     [generated.gridSize]
   );
 
@@ -251,9 +255,9 @@ export function GameplayScreen({
   );
 
   const cellStep = (BOARD_VIEWBOX - BOARD_PAD * 2) / generated.gridSize;
-  const strokeWidth = Math.min(5.6, Math.max(2.2, cellStep * 0.082));
-  const arrowTipScale = Math.min(1.28, Math.max(0.68, cellStep / 48));
-  const dotRadius = Math.min(2.6, Math.max(1.3, cellStep * 0.038));
+  const strokeWidth = Math.min(5.0, Math.max(1.65, cellStep * 0.14));
+  const arrowTipScale = Math.min(1.22, Math.max(0.36, cellStep / 34));
+  const dotRadius = Math.min(2.3, Math.max(0.85, cellStep * 0.052));
 
   const handleRestartLevel = () => {
     feedback.playTap();
@@ -316,14 +320,14 @@ export function GameplayScreen({
     }
   }, []);
 
-  const handleTapArrow = (arrow: ArrowTile) => {
-    if (statusModal !== 'none') return;
+  const handleTapArrow = useCallback((arrow: ArrowTile) => {
+    if (statusModalRef.current !== 'none') return;
     if (arrow.state !== 'idle') return;
     if (Date.now() < suppressTapUntilRef.current) return;
 
     feedback.unlock();
     const { clear, blockerCell, freeCells } = traceArrowPath(
-      arrows,
+      arrowsRef.current,
       arrow,
       generated.gridSize
     );
@@ -342,8 +346,8 @@ export function GameplayScreen({
     const singleHeadOffset =
       arrow.cells.length === 1 ? Math.min(cellStep * 0.22, 14) : 0;
     const gapCenterDist = (freeCells + 1) * cellStep - singleHeadOffset;
-    const tipContactBuffer = Math.max(10, strokeWidth * 2 + cellStep * 0.12);
-    const bumpDistancePx = Math.max(12, gapCenterDist - tipContactBuffer);
+    const tipContactBuffer = Math.max(cellStep * 0.34, strokeWidth * 1.8);
+    const bumpDistancePx = Math.max(cellStep * 0.28, gapCenterDist - tipContactBuffer);
 
     const hitDurationMs = 150 + freeCells * 60;
     const reboundDurationMs = 320 + freeCells * 50;
@@ -392,7 +396,7 @@ export function GameplayScreen({
           : a
       )
     );
-  };
+  }, [cellStep, generated.gridSize, strokeWidth, triggerHeartsShake]);
 
   const handleUseHint = () => {
     if (statusModal !== 'none' || activeArrows.length === 0) return;

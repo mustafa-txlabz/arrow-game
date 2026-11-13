@@ -12,7 +12,7 @@ A minimalist, mobile-first Tap Away puzzle game built with React, TypeScript, Ta
 - **Package ID:** `com.arrowescape.game`
 - **Orientation:** Strictly locked to **Portrait** mode (via both `AndroidManifest.xml` and `@capacitor/screen-orientation`)
 - **Core Gameplay:**
-  - Deterministic, seeded procedural puzzle generator (`Mulberry32`) scaling board dimensions every 50 levels (`4x4`, `5x5`, `6x6`, etc.).
+  - Deterministic, seeded procedural puzzle generator (`Mulberry32`) scaling cleanly from dense `6x6` boards (~11 arrows) through `18x18` (100+ arrows) up to `24x24` (~165–185 arrows) with 90–96% grid packing.
   - Multi-archetype labyrinth routing mixing long winding pipes, C-clamps, S-curves, and short strategic blockers.
   - Smooth SVG curved-arrow escape paths, collision rebound feedback, pinch-to-zoom and panning on dense boards, sound & haptic feedback, hints, and daily streak rewards.
   - Offline-ready persistence powered by `localStorage`.

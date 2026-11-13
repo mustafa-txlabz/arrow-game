@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ArrowTile } from '../types/game';
 import {
   buildArrowGeometry,
@@ -27,7 +27,7 @@ const ACTIVE_BLUE = '#2589FF';
  * - Blocked: slides across empty space to hit the blocker, turns permanently red, and rebounds.
  * - Penalty shake: subtle mini-shake in place when tapping an already-blocked red arrow.
  */
-export function AnimatedPathArrow({
+export const AnimatedPathArrow = memo(function AnimatedPathArrow({
   arrow,
   cellStep,
   strokeWidth,
@@ -242,7 +242,7 @@ export function AnimatedPathArrow({
         d={geom.restD}
         fill="none"
         stroke="#FFFFFF"
-        strokeWidth={strokeWidth + Math.min(4.5, strokeWidth * 1.1)}
+        strokeWidth={strokeWidth + Math.min(4.0, strokeWidth * 0.95)}
         strokeLinecap="round"
         strokeLinejoin="round"
         opacity={0.9}
@@ -278,16 +278,16 @@ export function AnimatedPathArrow({
         />
       </g>
 
-      {/* Wide invisible touch hit-target along entire bent path */}
+      {/* Proportional invisible touch hit-target along entire bent path */}
       <path
         ref={hitRef}
         d={geom.restD}
         fill="none"
         stroke="transparent"
-        strokeWidth={Math.max(24, cellStep * 0.72)}
+        strokeWidth={Math.max(9.5, Math.min(28, cellStep * 0.85))}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
     </g>
   );
-}
+});

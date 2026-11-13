@@ -1,7 +1,7 @@
 import type { Direction, GridPoint } from '../types/game';
 
 export const BOARD_VIEWBOX = 360;
-export const BOARD_PAD = 24;
+export const BOARD_PAD = 16;
 const BACK_EXT_LEN = 16;
 const EXIT_EXT_LEN = 430;
 

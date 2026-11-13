@@ -8,7 +8,7 @@ Standalone React Native (Expo SDK 58 / React Native 0.88) migration of **Arrow E
 
 - **100% Preserved Puzzle Engine (`src/utils/puzzleGenerator.ts`, `src/utils/arrowGeometry.ts`)**:
   - Deterministic **Mulberry32** seeded level generation keyed strictly by level number.
-  - **50-level grid scaling** (`1–50`: `4x4`, `51–100`: `5x5`, `101–150`: `6x6`, up to `12x12`).
+  - **Rapid progressive grid scaling** from `6x6` (~11 arrows) through `18x18` (100+ arrows) up to `24x24` (~165–185 arrows) with 90–96% grid occupancy.
   - Labyrinthine mix of long winding pipes, C-clamps, S-curves, and short strategic blockers with guaranteed deadlock-free solvability.
 - **Native SVG & 60fps Path Physics (`src/components/AnimatedPathArrow.tsx`)**:
   - Built with `react-native-svg` (`Svg`, `G`, `Path`, `Circle`) and `setNativeProps` animation frames for smooth flow-along-track escapes and full-distance blocked rebounds (turning permanently red after collision while deducting a heart only on the first blocked tap).
