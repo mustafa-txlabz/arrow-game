@@ -53,21 +53,34 @@ function getRayCells(
 }
 
 /**
- * Traces an arrow's pointing ray to the outer board boundary.
- * Returns whether the path is unobstructed and the first blocking cell if obstructed.
+ * Builds a flat occupancy bitmap (1 = occupied by a non-escaping arrow) in O(N).
  */
-export function traceArrowPath(
+export function buildOccupancyGrid(
   arrows: ArrowTile[],
-  target: ArrowTile,
   gridSize: number
-): { clear: boolean; blockerCell: GridPoint | null; freeCells: number } {
+): Uint8Array {
   const occ = new Uint8Array(gridSize * gridSize);
-  for (const a of arrows) {
-    if (a.id === target.id || a.state === 'escaping') continue;
-    for (const pt of a.cells) {
+  for (let i = 0; i < arrows.length; i++) {
+    const a = arrows[i];
+    if (a.state === 'escaping') continue;
+    for (let j = 0; j < a.cells.length; j++) {
+      const pt = a.cells[j];
       occ[pt.r * gridSize + pt.c] = 1;
     }
   }
+  return occ;
+}
+
+/**
+ * O(rayLen) zero-allocation path trace against a prebuilt/live occupancy grid.
+ * Because valid arrows never cross their own exit vector, `target` itself in `occ`
+ * never falsely blocks its own exit ray.
+ */
+export function traceArrowPathFast(
+  occ: Uint8Array,
+  target: ArrowTile,
+  gridSize: number
+): { clear: boolean; blockerCell: GridPoint | null; freeCells: number } {
   const head = target.cells[target.cells.length - 1];
   const { dr, dc } = DIR_DELTA[target.dir];
   let r = head.r + dr;
@@ -86,6 +99,27 @@ export function traceArrowPath(
 }
 
 /**
+ * Traces an arrow's pointing ray to the outer board boundary.
+ * Returns whether the path is unobstructed and the first blocking cell if obstructed.
+ */
+export function traceArrowPath(
+  arrows: ArrowTile[],
+  target: ArrowTile,
+  gridSize: number
+): { clear: boolean; blockerCell: GridPoint | null; freeCells: number } {
+  const occ = new Uint8Array(gridSize * gridSize);
+  for (let i = 0; i < arrows.length; i++) {
+    const a = arrows[i];
+    if (a.id === target.id || a.state === 'escaping') continue;
+    for (let j = 0; j < a.cells.length; j++) {
+      const pt = a.cells[j];
+      occ[pt.r * gridSize + pt.c] = 1;
+    }
+  }
+  return traceArrowPathFast(occ, target, gridSize);
+}
+
+/**
  * Checks whether an arrow's head has an unobstructed ray to the border of the grid.
  */
 export function isArrowClear(
@@ -97,15 +131,19 @@ export function isArrowClear(
 }
 
 /**
- * Finds a currently escapable arrow for the Hint system.
+ * Finds a currently escapable arrow for the Hint system in O(N * gridSize)
+ * (builds occupancy once instead of scanning the full board per arrow).
  */
 export function findEscapableArrow(
   arrows: ArrowTile[],
-  gridSize: number
+  gridSize: number,
+  prebuiltOcc?: Uint8Array
 ): ArrowTile | null {
-  for (const arrow of arrows) {
+  const occ = prebuiltOcc ?? buildOccupancyGrid(arrows, gridSize);
+  for (let i = 0; i < arrows.length; i++) {
+    const arrow = arrows[i];
     if (arrow.state === 'escaping') continue;
-    if (isArrowClear(arrows, arrow, gridSize)) {
+    if (traceArrowPathFast(occ, arrow, gridSize).clear) {
       return arrow;
     }
   }

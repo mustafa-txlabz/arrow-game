@@ -12,6 +12,8 @@ interface Point2D {
 
 export interface ArrowPolylineGeometry {
   pts: Point2D[];
+  ptsX: number[];
+  ptsY: number[];
   cumLen: number[];
   totalLen: number;
   backLen: number;
@@ -70,6 +72,8 @@ export function buildArrowGeometry(
     };
     const bodyLen = tailOffset + headOffset;
     const pts: Point2D[] = [backPt, pStart, pHead, exitPt];
+    const ptsX = pts.map((p) => p.x);
+    const ptsY = pts.map((p) => p.y);
     const cumLen: number[] = [0];
     for (let i = 1; i < pts.length; i++) {
       cumLen.push(cumLen[i - 1] + dist2D(pts[i - 1], pts[i]));
@@ -77,6 +81,8 @@ export function buildArrowGeometry(
     const totalLen = cumLen[cumLen.length - 1];
     const baseGeometry: ArrowPolylineGeometry = {
       pts,
+      ptsX,
+      ptsY,
       cumLen,
       totalLen,
       backLen: BACK_EXT_LEN,
@@ -171,6 +177,8 @@ export function buildArrowGeometry(
 
   // Assemble full continuous polyline: [backPt, ...bodyPts, exitPt]
   const pts: Point2D[] = [backPt, ...bodyPts, exitPt];
+  const ptsX = pts.map((p) => p.x);
+  const ptsY = pts.map((p) => p.y);
   const cumLen: number[] = [0];
   for (let i = 1; i < pts.length; i++) {
     cumLen.push(cumLen[i - 1] + dist2D(pts[i - 1], pts[i]));
@@ -179,6 +187,8 @@ export function buildArrowGeometry(
 
   const baseGeometry: ArrowPolylineGeometry = {
     pts,
+    ptsX,
+    ptsY,
     cumLen,
     totalLen,
     backLen: BACK_EXT_LEN,

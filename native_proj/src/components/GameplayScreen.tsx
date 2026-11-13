@@ -32,9 +32,10 @@ import {
   cellCenter,
 } from '../utils/arrowGeometry';
 import {
+  buildOccupancyGrid,
   findEscapableArrow,
   generateLevel,
-  traceArrowPath,
+  traceArrowPathFast,
 } from '../utils/puzzleGenerator';
 import { feedback } from '../utils/soundAndHaptics';
 import { AnimatedPathArrow } from './AnimatedPathArrow';
@@ -80,10 +81,10 @@ export function GameplayScreen({
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
-  const arrowsRef = useRef<ArrowTile[]>(arrows);
   const statusModalRef = useRef(statusModal);
-  arrowsRef.current = arrows;
   statusModalRef.current = statusModal;
+  const occGridRef = useRef<Uint8Array>(new Uint8Array(0));
+  const escapingIdsRef = useRef<Set<string>>(new Set());
   const suppressTapUntilRef = useRef<number>(0);
 
   const heartsShakeAnim = useRef(new RNAnimated.Value(0)).current;
@@ -99,6 +100,8 @@ export function GameplayScreen({
   const savedTy = useSharedValue(0);
   const pinchStartFx = useSharedValue(0);
   const pinchStartFy = useSharedValue(0);
+  const pinchMoved = useSharedValue(false);
+  const panMoved = useSharedValue(false);
 
   const maxZoomScale = useMemo(
     () => Math.min(7.2, Math.max(2.4, generated.gridSize * 0.23)),
@@ -128,6 +131,8 @@ export function GameplayScreen({
 
   useEffect(() => {
     clearScheduledTimeouts();
+    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    escapingIdsRef.current.clear();
     setArrows(generated.arrows);
     setLives(MAX_LIVES);
     livesRef.current = MAX_LIVES;
@@ -161,14 +166,19 @@ export function GameplayScreen({
     ]).start();
   }, [boardShakeAnim]);
 
-  const markGestureEnd = useCallback(() => {
-    suppressTapUntilRef.current = Date.now() + 280;
+  const markPinchEnd = useCallback(() => {
+    suppressTapUntilRef.current = Date.now() + 110;
+  }, []);
+
+  const markPanEnd = useCallback(() => {
+    suppressTapUntilRef.current = Date.now() + 65;
   }, []);
 
   const pinchGesture = useMemo(
     () =>
       Gesture.Pinch()
         .onStart((e) => {
+          pinchMoved.value = false;
           savedScale.value = scale.value;
           savedTx.value = tx.value;
           savedTy.value = ty.value;
@@ -176,6 +186,9 @@ export function GameplayScreen({
           pinchStartFy.value = e.focalY - boardSize.value * 0.5;
         })
         .onUpdate((e) => {
+          if (e.numberOfPointers >= 2 || Math.abs(e.scale - 1) > 0.025) {
+            pinchMoved.value = true;
+          }
           const nextScale = Math.min(
             maxZoomScale,
             Math.max(MIN_ZOOM_SCALE, savedScale.value * e.scale)
@@ -196,12 +209,15 @@ export function GameplayScreen({
           ty.value = Math.max(-maxOffset, Math.min(maxOffset, fy - by * nextScale));
         })
         .onEnd(() => {
-          runOnJS(markGestureEnd)();
+          if (pinchMoved.value) {
+            runOnJS(markPinchEnd)();
+          }
         }),
     [
       boardSize,
-      markGestureEnd,
+      markPinchEnd,
       maxZoomScale,
+      pinchMoved,
       pinchStartFx,
       pinchStartFy,
       savedScale,
@@ -216,24 +232,28 @@ export function GameplayScreen({
   const panGesture = useMemo(
     () =>
       Gesture.Pan()
-        .minDistance(10)
+        .minDistance(14)
         .maxPointers(1)
         .onStart(() => {
+          panMoved.value = false;
           savedTx.value = tx.value;
           savedTy.value = ty.value;
         })
         .onUpdate((e) => {
           if (scale.value <= MIN_ZOOM_SCALE) return;
+          if (Math.abs(e.translationX) > 6 || Math.abs(e.translationY) > 6) {
+            panMoved.value = true;
+          }
           const maxOffset = boardSize.value * (scale.value - 1) * 0.5;
           tx.value = Math.max(-maxOffset, Math.min(maxOffset, savedTx.value + e.translationX));
           ty.value = Math.max(-maxOffset, Math.min(maxOffset, savedTy.value + e.translationY));
         })
         .onEnd(() => {
-          if (scale.value > MIN_ZOOM_SCALE) {
-            runOnJS(markGestureEnd)();
+          if (panMoved.value && scale.value > MIN_ZOOM_SCALE) {
+            runOnJS(markPanEnd)();
           }
         }),
-    [boardSize, markGestureEnd, savedTx, savedTy, scale, tx, ty]
+    [boardSize, markPanEnd, panMoved, savedTx, savedTy, scale, tx, ty]
   );
 
   const composedGesture = useMemo(
@@ -283,6 +303,8 @@ export function GameplayScreen({
   const handleRestartLevel = () => {
     feedback.playTap();
     clearScheduledTimeouts();
+    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    escapingIdsRef.current.clear();
     setArrows(generated.arrows);
     setLives(MAX_LIVES);
     livesRef.current = MAX_LIVES;
@@ -295,6 +317,7 @@ export function GameplayScreen({
 
   const handleEscapeComplete = useCallback(
     (id: string) => {
+      escapingIdsRef.current.delete(id);
       setArrows((prev) => {
         const next = prev.filter((a) => a.id !== id);
         if (next.length === 0) {
@@ -344,16 +367,26 @@ export function GameplayScreen({
   const handleTapArrow = useCallback((arrow: ArrowTile) => {
     if (statusModalRef.current !== 'none') return;
     if (arrow.state !== 'idle') return;
+    if (escapingIdsRef.current.has(arrow.id)) return;
     if (Date.now() < suppressTapUntilRef.current) return;
 
     feedback.unlock();
-    const { clear, blockerCell, freeCells } = traceArrowPath(
-      arrowsRef.current,
+    const gridSize = generated.gridSize;
+    const { clear, blockerCell, freeCells } = traceArrowPathFast(
+      occGridRef.current,
       arrow,
-      generated.gridSize
+      gridSize
     );
 
     if (clear) {
+      // Immediately release occupancy synchronously so rapid multi-taps on inner arrows never wait for React commit
+      escapingIdsRef.current.add(arrow.id);
+      const occ = occGridRef.current;
+      for (let i = 0; i < arrow.cells.length; i++) {
+        const pt = arrow.cells[i];
+        occ[pt.r * gridSize + pt.c] = 0;
+      }
+
       feedback.playEscape();
       setHintTargetId((prev) => (prev === arrow.id ? null : prev));
       setArrows((prev) =>
@@ -425,7 +458,11 @@ export function GameplayScreen({
       feedback.playBlocked();
       return;
     }
-    const candidate = findEscapableArrow(arrows, generated.gridSize);
+    const candidate = findEscapableArrow(
+      arrows,
+      generated.gridSize,
+      occGridRef.current
+    );
     if (!candidate) return;
     if (onConsumeHint()) {
       feedback.playHint();

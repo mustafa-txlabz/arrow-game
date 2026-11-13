@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import type { ArrowTile } from '../types/game';
 import {
   buildArrowGeometry,
@@ -39,7 +39,6 @@ export const AnimatedPathArrow = memo(function AnimatedPathArrow({
   onBlockedComplete,
   onPenaltyComplete,
 }: AnimatedPathArrowProps) {
-  const [pressed, setPressed] = useState(false);
 
   const geom = useMemo(
     () => buildArrowGeometry(arrow.cells, arrow.dir, cellStep),
@@ -98,9 +97,9 @@ export const AnimatedPathArrow = memo(function AnimatedPathArrow({
 
   useEffect(() => {
     if (arrow.state === 'idle' && groupRef.current) {
-      groupRef.current.style.transform = pressed ? 'scale(0.98)' : '';
+      groupRef.current.style.transform = '';
     }
-  }, [arrow.state, pressed]);
+  }, [arrow.state]);
 
   useEffect(() => {
     if (arrow.state === 'idle') {
@@ -231,9 +230,21 @@ export const AnimatedPathArrow = memo(function AnimatedPathArrow({
       style={{
         transformOrigin: `${geom.restHead.x}px ${geom.restHead.y}px`,
       }}
-      onPointerDown={() => setPressed(true)}
-      onPointerUp={() => setPressed(false)}
-      onPointerLeave={() => setPressed(false)}
+      onPointerDown={() => {
+        if (arrow.state === 'idle' && groupRef.current) {
+          groupRef.current.style.transform = 'scale(0.98)';
+        }
+      }}
+      onPointerUp={() => {
+        if (arrow.state === 'idle' && groupRef.current) {
+          groupRef.current.style.transform = '';
+        }
+      }}
+      onPointerLeave={() => {
+        if (arrow.state === 'idle' && groupRef.current) {
+          groupRef.current.style.transform = '';
+        }
+      }}
       onClick={() => onTap(arrow)}
     >
       {/* Crisp white backing halo so crossing dots never clutter the line */}

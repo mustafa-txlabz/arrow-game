@@ -16,9 +16,10 @@ import {
   cellCenter,
 } from '../utils/arrowGeometry';
 import {
+  buildOccupancyGrid,
   findEscapableArrow,
   generateLevel,
-  traceArrowPath,
+  traceArrowPathFast,
 } from '../utils/puzzleGenerator';
 import { feedback } from '../utils/soundAndHaptics';
 import { AnimatedPathArrow } from './AnimatedPathArrow';
@@ -67,10 +68,10 @@ export function GameplayScreen({
 
   const timersRef = useRef<number[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
-  const arrowsRef = useRef<ArrowTile[]>(arrows);
   const statusModalRef = useRef(statusModal);
-  arrowsRef.current = arrows;
   statusModalRef.current = statusModal;
+  const occGridRef = useRef<Uint8Array>(new Uint8Array(0));
+  const escapingIdsRef = useRef<Set<string>>(new Set());
 
   // Pinch-to-Zoom & Panning state (stored in refs for 60fps DOM transform updates)
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -160,6 +161,8 @@ export function GameplayScreen({
 
   useEffect(() => {
     clearScheduledTimeouts();
+    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    escapingIdsRef.current.clear();
     setArrows(generated.arrows);
     setLives(MAX_LIVES);
     livesRef.current = MAX_LIVES;
@@ -234,6 +237,8 @@ export function GameplayScreen({
   const handleRestartLevel = () => {
     feedback.playTap();
     clearScheduledTimeouts();
+    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    escapingIdsRef.current.clear();
     setArrows(generated.arrows);
     setLives(MAX_LIVES);
     livesRef.current = MAX_LIVES;
@@ -246,6 +251,7 @@ export function GameplayScreen({
 
   const handleEscapeComplete = useCallback(
     (id: string) => {
+      escapingIdsRef.current.delete(id);
       setArrows((prev) => {
         const next = prev.filter((a) => a.id !== id);
         if (next.length === 0) {
@@ -294,17 +300,26 @@ export function GameplayScreen({
   const handleTapArrow = useCallback((arrow: ArrowTile) => {
     if (statusModalRef.current !== 'none') return;
     if (arrow.state !== 'idle') return;
+    if (escapingIdsRef.current.has(arrow.id)) return;
     if (performance.now() < suppressTapUntilRef.current) return;
 
     feedback.unlock();
-    const { clear, blockerCell, freeCells } = traceArrowPath(
-      arrowsRef.current,
+    const gridSize = generated.gridSize;
+    const { clear, blockerCell, freeCells } = traceArrowPathFast(
+      occGridRef.current,
       arrow,
-      generated.gridSize
+      gridSize
     );
 
     if (clear) {
-      // Scenario A: Path is clear -> arrow flows smoothly off the board edge
+      // Scenario A: Path is clear -> release occupancy synchronously and flow off the board edge
+      escapingIdsRef.current.add(arrow.id);
+      const occ = occGridRef.current;
+      for (let i = 0; i < arrow.cells.length; i++) {
+        const pt = arrow.cells[i];
+        occ[pt.r * gridSize + pt.c] = 0;
+      }
+
       feedback.playEscape();
       setHintTargetId((prev) => (prev === arrow.id ? null : prev));
 
@@ -408,7 +423,7 @@ export function GameplayScreen({
         startMidY: my,
         moved: true,
       };
-      suppressTapUntilRef.current = performance.now() + 350;
+      suppressTapUntilRef.current = performance.now() + 120;
     }
   };
 
@@ -437,7 +452,7 @@ export function GameplayScreen({
       const rawTy = my - by * nextScale;
 
       applyZoomTransform(clampTransform(nextScale, rawTx, rawTy));
-      suppressTapUntilRef.current = performance.now() + 350;
+      suppressTapUntilRef.current = performance.now() + 120;
       return;
     }
 
@@ -445,7 +460,7 @@ export function GameplayScreen({
       const dx = e.clientX - g.startMidX;
       const dy = e.clientY - g.startMidY;
 
-      if (!g.moved && Math.hypot(dx, dy) > 6) {
+      if (!g.moved && Math.hypot(dx, dy) > 8) {
         g.moved = true;
       }
 
@@ -453,7 +468,7 @@ export function GameplayScreen({
         applyZoomTransform(
           clampTransform(g.startScale, g.startTx + dx, g.startTy + dy)
         );
-        suppressTapUntilRef.current = performance.now() + 280;
+        suppressTapUntilRef.current = performance.now() + 70;
       }
     }
   };
@@ -474,7 +489,7 @@ export function GameplayScreen({
         startMidY: remaining.y,
         moved: true,
       };
-      suppressTapUntilRef.current = performance.now() + 280;
+      suppressTapUntilRef.current = performance.now() + 70;
     } else if (pointersRef.current.size === 0) {
       gestureRef.current.mode = 'none';
     }
@@ -486,7 +501,11 @@ export function GameplayScreen({
       feedback.playBlocked();
       return;
     }
-    const candidate = findEscapableArrow(arrows, generated.gridSize);
+    const candidate = findEscapableArrow(
+      arrows,
+      generated.gridSize,
+      occGridRef.current
+    );
     if (!candidate) return;
     if (onConsumeHint()) {
       feedback.playHint();
