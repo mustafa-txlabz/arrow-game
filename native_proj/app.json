@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Arrow Escape",
+    "slug": "arrow-escape",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F5F8FC",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.arrowescape.game"
+    },
+    "android": {
+      "package": "com.arrowescape.game",
+      "adaptiveIcon": {
+        "backgroundColor": "#F5F8FC"
+      }
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
+        }
+      ]
+    ]
+  }
+}
