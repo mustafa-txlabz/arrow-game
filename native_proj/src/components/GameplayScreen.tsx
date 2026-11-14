@@ -403,8 +403,8 @@ export function GameplayScreen({
     const tipContactBuffer = Math.max(cellStep * 0.34, strokeWidth * 1.8);
     const bumpDistancePx = Math.max(cellStep * 0.28, gapCenterDist - tipContactBuffer);
 
-    const hitDurationMs = 150 + freeCells * 60;
-    const reboundDurationMs = 320 + freeCells * 50;
+    const hitDurationMs = 80 + freeCells * 20;
+    const reboundDurationMs = 140 + freeCells * 25;
     const bumpDurationMs = hitDurationMs + reboundDurationMs;
 
     feedback.playTap();

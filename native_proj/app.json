@@ -14,7 +14,10 @@
       "package": "com.arrowescape.game",
       "adaptiveIcon": {
         "backgroundColor": "#F5F8FC"
-      }
+      },
+      "permissions": [
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "plugins": [
       [
@@ -26,6 +29,11 @@
           "enableBackgroundRecording": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "27f64af9-0c08-43c3-8a2b-ca3591788170"
+      }
+    }
   }
 }

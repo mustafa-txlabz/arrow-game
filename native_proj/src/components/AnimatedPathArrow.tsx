@@ -217,7 +217,7 @@ function ActiveArrowRunner({
   const peakBump = bumpDistancePx ?? Math.max(24, cellStep * 0.65);
   const duration =
     mode === 'escaping'
-      ? Math.min(600, Math.max(470, 440 + geom.bodyLen * 0.45))
+      ? Math.min(360, Math.max(260, 220 + geom.bodyLen * 0.3))
       : mode === 'blocked'
         ? (bumpDurationMs ?? 520)
         : 240;
