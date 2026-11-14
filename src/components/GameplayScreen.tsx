@@ -13,6 +13,7 @@ import type { ArrowTile, GridPoint } from '../types/game';
 import {
   BOARD_PAD,
   BOARD_VIEWBOX,
+  buildGridDotsPath,
   cellCenter,
 } from '../utils/arrowGeometry';
 import {
@@ -213,25 +214,9 @@ export function GameplayScreen({
   const arrowTipScale = Math.min(1.22, Math.max(0.28, cellStep / 33));
   const dotRadius = Math.min(2.3, Math.max(0.65, cellStep * 0.052));
 
-  const gridDots = useMemo(
-    () =>
-      Array.from({ length: generated.gridSize * generated.gridSize }).map(
-        (_, index) => {
-          const r = Math.floor(index / generated.gridSize);
-          const c = index % generated.gridSize;
-          const { x, y } = cellCenter({ r, c }, cellStep);
-          return (
-            <circle
-              key={`dot-${r}-${c}`}
-              cx={x}
-              cy={y}
-              r={dotRadius}
-              fill="#CBD5E1"
-            />
-          );
-        }
-      ),
-    [generated.gridSize, cellStep, dotRadius]
+  const dotsPathD = useMemo(
+    () => buildGridDotsPath(generated.gridSize, cellStep),
+    [generated.gridSize, cellStep]
   );
 
   const handleRestartLevel = () => {
@@ -647,8 +632,14 @@ export function GameplayScreen({
                 </filter>
               </defs>
 
-              {/* Subtle Dotted Grid Matrix */}
-              {gridDots}
+              {/* Subtle Dotted Grid Matrix (1 SVG path) */}
+              <path
+                d={dotsPathD}
+                fill="none"
+                stroke="#CBD5E1"
+                strokeWidth={dotRadius * 2}
+                strokeLinecap="round"
+              />
 
               {/* Bent & Custom Path Arrows */}
               {arrows.map((arrow) => (

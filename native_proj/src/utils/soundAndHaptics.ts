@@ -96,6 +96,77 @@ function synthesizeWavDataUri(notes: ToneNote[], totalDurationSec: number): stri
 
 type SfxKey = 'tap' | 'escape' | 'blocked' | 'hint' | 'reward' | 'levelClear';
 
+interface SfxSpec {
+  notes: ToneNote[];
+  durationSec: number;
+  poolSize: number;
+}
+
+const SFX_SPECS: Record<SfxKey, SfxSpec> = {
+  tap: {
+    notes: [{ freqStart: 520, freqEnd: 640, delaySec: 0, durationSec: 0.055, volume: 0.25 }],
+    durationSec: 0.06,
+    poolSize: 2,
+  },
+  escape: {
+    notes: [
+      {
+        freqStart: 420,
+        freqEnd: 880,
+        delaySec: 0,
+        durationSec: 0.13,
+        volume: 0.35,
+        wave: 'triangle',
+      },
+    ],
+    durationSec: 0.14,
+    poolSize: 3,
+  },
+  blocked: {
+    notes: [
+      {
+        freqStart: 165,
+        freqEnd: 95,
+        delaySec: 0,
+        durationSec: 0.16,
+        volume: 0.4,
+        wave: 'sawtooth',
+      },
+    ],
+    durationSec: 0.17,
+    poolSize: 2,
+  },
+  hint: {
+    notes: [
+      { freqStart: 660, delaySec: 0, durationSec: 0.18, volume: 0.28 },
+      { freqStart: 990, delaySec: 0.06, durationSec: 0.2, volume: 0.28 },
+    ],
+    durationSec: 0.27,
+    poolSize: 1,
+  },
+  reward: {
+    notes: [
+      { freqStart: 987.77, delaySec: 0, durationSec: 0.18, volume: 0.26, wave: 'triangle' },
+      { freqStart: 1318.51, delaySec: 0.05, durationSec: 0.18, volume: 0.26, wave: 'triangle' },
+      { freqStart: 1567.98, delaySec: 0.1, durationSec: 0.2, volume: 0.26, wave: 'triangle' },
+    ],
+    durationSec: 0.32,
+    poolSize: 1,
+  },
+  levelClear: {
+    notes: [
+      { freqStart: 523.25, delaySec: 0, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
+      { freqStart: 659.25, delaySec: 0.075, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
+      { freqStart: 783.99, delaySec: 0.15, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
+      { freqStart: 1046.5, delaySec: 0.225, durationSec: 0.34, volume: 0.3, wave: 'triangle' },
+    ],
+    durationSec: 0.58,
+    poolSize: 1,
+  },
+};
+
+type PooledPlayer = ReturnType<typeof createAudioPlayer>;
+
 class NativeFeedbackManager {
   private settings: GameSettings = {
     sfx: true,
@@ -104,6 +175,15 @@ class NativeFeedbackManager {
   };
   private audioConfigured = false;
   private toneUris: Partial<Record<SfxKey, string>> = {};
+  private playerPools: Partial<Record<SfxKey, PooledPlayer[]>> = {};
+  private poolCursor: Record<SfxKey, number> = {
+    tap: 0,
+    escape: 0,
+    blocked: 0,
+    hint: 0,
+    reward: 0,
+    levelClear: 0,
+  };
   private musicInterval: ReturnType<typeof setInterval> | null = null;
   private musicStep = 0;
 
@@ -129,26 +209,47 @@ class NativeFeedbackManager {
     }).catch(() => {});
   }
 
-  public unlock(): void {
-    this.ensureAudioMode();
+  private getPooledPlayer(key: SfxKey): PooledPlayer | null {
+    let pool = this.playerPools[key];
+    if (!pool) {
+      const spec = SFX_SPECS[key];
+      const uri = (this.toneUris[key] ??= synthesizeWavDataUri(
+        spec.notes,
+        spec.durationSec
+      ));
+      pool = [];
+      for (let i = 0; i < spec.poolSize; i++) {
+        pool.push(createAudioPlayer(uri));
+      }
+      this.playerPools[key] = pool;
+    }
+    if (pool.length === 0) return null;
+    const idx = this.poolCursor[key] % pool.length;
+    this.poolCursor[key] = idx + 1;
+    return pool[idx];
   }
 
-  private playSfx(key: SfxKey, notes: ToneNote[], totalDurationSec: number): void {
+  public unlock(): void {
+    this.ensureAudioMode();
+    if (!this.settings.sfx) return;
+    try {
+      // Pre-warm tap and escape pools once so first rapid taps have zero native player setup latency
+      if (!this.playerPools.escape) this.getPooledPlayer('escape');
+      if (!this.playerPools.tap) this.getPooledPlayer('tap');
+    } catch {
+      // Ignore audio warm-up failures on unsupported devices
+    }
+  }
+
+  private playSfx(key: SfxKey): void {
     if (!this.settings.sfx) return;
     this.ensureAudioMode();
     try {
-      if (!this.toneUris[key]) {
-        this.toneUris[key] = synthesizeWavDataUri(notes, totalDurationSec);
-      }
-      const uri = this.toneUris[key]!;
-      const player = createAudioPlayer(uri);
-      const sub = player.addListener('playbackStatusUpdate', (status) => {
-        if (status.didJustFinish) {
-          sub.remove();
-          player.remove();
-        }
-      });
-      player.play();
+      const player = this.getPooledPlayer(key);
+      if (!player) return;
+      void player.seekTo(0).then(() => {
+        player.play();
+      }).catch(() => {});
     } catch {
       // Ignore audio failures on simulators/unsupported devices
     }
@@ -158,96 +259,42 @@ class NativeFeedbackManager {
     if (this.settings.haptics) {
       Haptics.selectionAsync().catch(() => {});
     }
-    this.playSfx(
-      'tap',
-      [{ freqStart: 520, freqEnd: 640, delaySec: 0, durationSec: 0.055, volume: 0.25 }],
-      0.06
-    );
+    this.playSfx('tap');
   }
 
   public playEscape(): void {
     if (this.settings.haptics) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
-    this.playSfx(
-      'escape',
-      [
-        {
-          freqStart: 420,
-          freqEnd: 880,
-          delaySec: 0,
-          durationSec: 0.13,
-          volume: 0.35,
-          wave: 'triangle',
-        },
-      ],
-      0.14
-    );
+    this.playSfx('escape');
   }
 
   public playBlocked(): void {
     if (this.settings.haptics) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
     }
-    this.playSfx(
-      'blocked',
-      [
-        {
-          freqStart: 165,
-          freqEnd: 95,
-          delaySec: 0,
-          durationSec: 0.16,
-          volume: 0.4,
-          wave: 'sawtooth',
-        },
-      ],
-      0.17
-    );
+    this.playSfx('blocked');
   }
 
   public playHint(): void {
     if (this.settings.haptics) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
-    this.playSfx(
-      'hint',
-      [
-        { freqStart: 660, delaySec: 0, durationSec: 0.18, volume: 0.28 },
-        { freqStart: 990, delaySec: 0.06, durationSec: 0.2, volume: 0.28 },
-      ],
-      0.27
-    );
+    this.playSfx('hint');
   }
 
   public playReward(): void {
     if (this.settings.haptics) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
-    this.playSfx(
-      'reward',
-      [
-        { freqStart: 987.77, delaySec: 0, durationSec: 0.18, volume: 0.26, wave: 'triangle' },
-        { freqStart: 1318.51, delaySec: 0.05, durationSec: 0.18, volume: 0.26, wave: 'triangle' },
-        { freqStart: 1567.98, delaySec: 0.1, durationSec: 0.2, volume: 0.26, wave: 'triangle' },
-      ],
-      0.32
-    );
+    this.playSfx('reward');
   }
 
   public playLevelClear(): void {
     if (this.settings.haptics) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
-    this.playSfx(
-      'levelClear',
-      [
-        { freqStart: 523.25, delaySec: 0, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
-        { freqStart: 659.25, delaySec: 0.075, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
-        { freqStart: 783.99, delaySec: 0.15, durationSec: 0.26, volume: 0.28, wave: 'triangle' },
-        { freqStart: 1046.5, delaySec: 0.225, durationSec: 0.34, volume: 0.3, wave: 'triangle' },
-      ],
-      0.58
-    );
+    this.playSfx('levelClear');
   }
 
   private startAmbientMusic(): void {

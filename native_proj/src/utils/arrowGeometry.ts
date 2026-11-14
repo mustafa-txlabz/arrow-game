@@ -20,7 +20,44 @@ export interface ArrowPolylineGeometry {
   bodyLen: number;
   tipTrim: number;
   restD: string;
+  restHeadD: string;
   restHead: { x: number; y: number; angle: number };
+}
+
+export function buildHeadPathString(
+  hx: number,
+  hy: number,
+  rad: number,
+  tipScale: number
+): string {
+  const cos = Math.cos(rad) * tipScale;
+  const sin = Math.sin(rad) * tipScale;
+  const p0x = (hx + 6 * cos).toFixed(2);
+  const p0y = (hy + 6 * sin).toFixed(2);
+  const p1x = (hx - 5.5 * cos + 5.8 * sin).toFixed(2);
+  const p1y = (hy - 5.5 * sin - 5.8 * cos).toFixed(2);
+  const p2x = (hx - 3.5 * cos).toFixed(2);
+  const p2y = (hy - 3.5 * sin).toFixed(2);
+  const p3x = (hx - 5.5 * cos - 5.8 * sin).toFixed(2);
+  const p3y = (hy - 5.5 * sin + 5.8 * cos).toFixed(2);
+  return `M ${p0x} ${p0y} L ${p1x} ${p1y} L ${p2x} ${p2y} L ${p3x} ${p3y} Z`;
+}
+
+/**
+ * Builds a single compound SVG path for all gridSize x gridSize dots
+ * using round-capped micro-strokes (`M x y h 0.01`) so Android renders
+ * 1,024+ matrix dots in 1 draw call instead of 1,024 native Circle views.
+ */
+export function buildGridDotsPath(gridSize: number, cellStep: number): string {
+  const parts: string[] = [];
+  for (let r = 0; r < gridSize; r++) {
+    const y = (BOARD_PAD + r * cellStep + cellStep * 0.5).toFixed(2);
+    for (let c = 0; c < gridSize; c++) {
+      const x = (BOARD_PAD + c * cellStep + cellStep * 0.5).toFixed(2);
+      parts.push(`M ${x} ${y} h 0.01`);
+    }
+  }
+  return parts.join(' ');
 }
 
 export function cellCenter(pt: GridPoint, cellStep: number): Point2D {
@@ -41,7 +78,8 @@ function dist2D(a: Point2D, b: Point2D): number {
 export function buildArrowGeometry(
   cells: GridPoint[],
   dir: Direction,
-  cellStep: number
+  cellStep: number,
+  arrowTipScale = 1
 ): ArrowPolylineGeometry {
   const centers = cells.map((pt) => cellCenter(pt, cellStep));
   const tipTrim = Math.min(8, cellStep * 0.16);
@@ -89,6 +127,7 @@ export function buildArrowGeometry(
       bodyLen,
       tipTrim,
       restD: '',
+      restHeadD: '',
       restHead: { x: pHead.x, y: pHead.y, angle: 0 },
     };
     const restSlice = sliceArrowGeometry(baseGeometry, 0);
@@ -98,6 +137,12 @@ export function buildArrowGeometry(
       y: restSlice.headY,
       angle: restSlice.headAngle,
     };
+    baseGeometry.restHeadD = buildHeadPathString(
+      restSlice.headX,
+      restSlice.headY,
+      (restSlice.headAngle * Math.PI) / 180,
+      arrowTipScale
+    );
     return baseGeometry;
   }
 
@@ -195,6 +240,7 @@ export function buildArrowGeometry(
     bodyLen,
     tipTrim,
     restD: '',
+    restHeadD: '',
     restHead: { x: head.x, y: head.y, angle: 0 },
   };
 
@@ -205,6 +251,12 @@ export function buildArrowGeometry(
     y: restSlice.headY,
     angle: restSlice.headAngle,
   };
+  baseGeometry.restHeadD = buildHeadPathString(
+    restSlice.headX,
+    restSlice.headY,
+    (restSlice.headAngle * Math.PI) / 180,
+    arrowTipScale
+  );
 
   return baseGeometry;
 }

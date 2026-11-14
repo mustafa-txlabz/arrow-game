@@ -21,6 +21,18 @@ export interface ArrowPolylineGeometry {
   restHead: { x: number; y: number; angle: number };
 }
 
+export function buildGridDotsPath(gridSize: number, cellStep: number): string {
+  const parts: string[] = [];
+  for (let r = 0; r < gridSize; r++) {
+    const y = (BOARD_PAD + r * cellStep + cellStep * 0.5).toFixed(2);
+    for (let c = 0; c < gridSize; c++) {
+      const x = (BOARD_PAD + c * cellStep + cellStep * 0.5).toFixed(2);
+      parts.push(`M ${x} ${y} h 0.01`);
+    }
+  }
+  return parts.join(' ');
+}
+
 export function cellCenter(pt: GridPoint, cellStep: number): Point2D {
   return {
     x: BOARD_PAD + pt.c * cellStep + cellStep * 0.5,

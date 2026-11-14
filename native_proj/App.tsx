@@ -2,8 +2,11 @@ import 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import AppRoot from './src/App';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function App() {
   return (

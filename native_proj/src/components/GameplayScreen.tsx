@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated as RNAnimated,
   Dimensions,
   Modal,
   StyleSheet,
@@ -13,9 +12,11 @@ import Reanimated, {
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
+  withSequence,
+  withTiming,
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import {
   ChevronLeft,
   Heart,
@@ -29,6 +30,9 @@ import type { ArrowTile, GridPoint } from '../types/game';
 import {
   BOARD_PAD,
   BOARD_VIEWBOX,
+  type ArrowPolylineGeometry,
+  buildArrowGeometry,
+  buildGridDotsPath,
   cellCenter,
 } from '../utils/arrowGeometry';
 import {
@@ -38,7 +42,7 @@ import {
   traceArrowPathFast,
 } from '../utils/puzzleGenerator';
 import { feedback } from '../utils/soundAndHaptics';
-import { AnimatedPathArrow } from './AnimatedPathArrow';
+import { ActiveArrowRunner } from './AnimatedPathArrow';
 import { ConfettiBurst } from './ConfettiBurst';
 
 interface GameplayScreenProps {
@@ -52,11 +56,14 @@ interface GameplayScreenProps {
 
 const MAX_LIVES = 3;
 const MIN_ZOOM_SCALE = 1;
+const BLOCKED_RED = '#EF4444';
+const ACTIVE_BLUE = '#2589FF';
 
 /**
- * Minimalist light-mode Gameplay Screen for Arrow Escape (React Native).
- * Uses react-native-svg for dotted grid & curved path arrows,
- * react-native-gesture-handler + react-native-reanimated for bounded pinch-to-zoom & pan.
+ * Ultra-fast minimalist light-mode Gameplay Screen for Arrow Escape (React Native):
+ * - Compound SVG path batching: all grid dots + all static idle/blocked arrows render in ~4-7 native SVG Paths total.
+ * - O(1) grid-cell hit-testing inside RNGH Tap gesture (zero per-arrow SVG hitTest overhead).
+ * - UI-thread Reanimated worklets for pinch/pan, arrow escape/rebound, and HUD/board shakes.
  */
 export function GameplayScreen({
   level,
@@ -83,12 +90,15 @@ export function GameplayScreen({
   const livesRef = useRef<number>(MAX_LIVES);
   const statusModalRef = useRef(statusModal);
   statusModalRef.current = statusModal;
+
   const occGridRef = useRef<Uint8Array>(new Uint8Array(0));
+  const cellOwnerRef = useRef<Int32Array>(new Int32Array(0));
+  const arrowsByIdRef = useRef<Map<string, ArrowTile>>(new Map());
   const escapingIdsRef = useRef<Set<string>>(new Set());
   const suppressTapUntilRef = useRef<number>(0);
 
-  const heartsShakeAnim = useRef(new RNAnimated.Value(0)).current;
-  const boardShakeAnim = useRef(new RNAnimated.Value(0)).current;
+  const heartsShakeX = useSharedValue(0);
+  const boardShakeX = useSharedValue(0);
 
   const defaultBoardPx = Math.min(Dimensions.get('window').width - 32, 368);
   const boardSize = useSharedValue(defaultBoardPx);
@@ -102,6 +112,42 @@ export function GameplayScreen({
   const pinchStartFy = useSharedValue(0);
   const pinchMoved = useSharedValue(false);
   const panMoved = useSharedValue(false);
+
+  const cellStep = (BOARD_VIEWBOX - BOARD_PAD * 2) / generated.gridSize;
+  const strokeWidth = Math.min(5.0, Math.max(1.25, cellStep * 0.145));
+  const arrowTipScale = Math.min(1.22, Math.max(0.28, cellStep / 33));
+  const dotRadius = Math.min(2.3, Math.max(0.65, cellStep * 0.052));
+  const haloWidth = strokeWidth + Math.min(4.0, strokeWidth * 0.95);
+  const headStrokeWidth = Math.max(0.45, 1.2 * arrowTipScale);
+
+  // Precompute all level geometry, compound grid dots path, and initial cell ownership once per level
+  const levelData = useMemo(() => {
+    const gridSize = generated.gridSize;
+    const dotsPathD = buildGridDotsPath(gridSize, cellStep);
+    const geomById = new Map<string, ArrowPolylineGeometry>();
+    const initialCellOwner = new Int32Array(gridSize * gridSize).fill(-1);
+
+    for (let i = 0; i < generated.arrows.length; i++) {
+      const a = generated.arrows[i];
+      geomById.set(a.id, buildArrowGeometry(a.cells, a.dir, cellStep, arrowTipScale));
+      for (let j = 0; j < a.cells.length; j++) {
+        const pt = a.cells[j];
+        initialCellOwner[pt.r * gridSize + pt.c] = i;
+      }
+    }
+
+    return { dotsPathD, geomById, initialCellOwner };
+  }, [generated, cellStep, arrowTipScale]);
+
+  // Keep an O(1) lookup map synced to current React state
+  const arrowsById = useMemo(() => {
+    const map = new Map<string, ArrowTile>();
+    for (let i = 0; i < arrows.length; i++) {
+      map.set(arrows[i].id, arrows[i]);
+    }
+    return map;
+  }, [arrows]);
+  arrowsByIdRef.current = arrowsById;
 
   const maxZoomScale = useMemo(
     () => Math.min(7.2, Math.max(2.4, generated.gridSize * 0.23)),
@@ -132,6 +178,7 @@ export function GameplayScreen({
   useEffect(() => {
     clearScheduledTimeouts();
     occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    cellOwnerRef.current = new Int32Array(levelData.initialCellOwner);
     escapingIdsRef.current.clear();
     setArrows(generated.arrows);
     setLives(MAX_LIVES);
@@ -141,38 +188,272 @@ export function GameplayScreen({
     setCelebrating(false);
     setStatusModal('none');
     resetZoomTransform();
+    feedback.unlock();
     return clearScheduledTimeouts;
-  }, [generated, resetZoomTransform]);
+  }, [generated, levelData.initialCellOwner, resetZoomTransform]);
 
   const triggerHeartsShake = useCallback(() => {
-    heartsShakeAnim.setValue(0);
-    RNAnimated.sequence([
-      RNAnimated.timing(heartsShakeAnim, { toValue: -5, duration: 55, useNativeDriver: true }),
-      RNAnimated.timing(heartsShakeAnim, { toValue: 5, duration: 55, useNativeDriver: true }),
-      RNAnimated.timing(heartsShakeAnim, { toValue: -3, duration: 55, useNativeDriver: true }),
-      RNAnimated.timing(heartsShakeAnim, { toValue: 3, duration: 55, useNativeDriver: true }),
-      RNAnimated.timing(heartsShakeAnim, { toValue: 0, duration: 55, useNativeDriver: true }),
-    ]).start();
-  }, [heartsShakeAnim]);
+    heartsShakeX.value = 0;
+    heartsShakeX.value = withSequence(
+      withTiming(-5, { duration: 48 }),
+      withTiming(5, { duration: 48 }),
+      withTiming(-3, { duration: 48 }),
+      withTiming(3, { duration: 48 }),
+      withTiming(0, { duration: 48 })
+    );
+  }, [heartsShakeX]);
 
   const triggerBoardCelebrateShake = useCallback(() => {
-    boardShakeAnim.setValue(0);
-    RNAnimated.sequence([
-      RNAnimated.timing(boardShakeAnim, { toValue: -6, duration: 60, useNativeDriver: true }),
-      RNAnimated.timing(boardShakeAnim, { toValue: 6, duration: 60, useNativeDriver: true }),
-      RNAnimated.timing(boardShakeAnim, { toValue: -4, duration: 60, useNativeDriver: true }),
-      RNAnimated.timing(boardShakeAnim, { toValue: 4, duration: 60, useNativeDriver: true }),
-      RNAnimated.timing(boardShakeAnim, { toValue: 0, duration: 60, useNativeDriver: true }),
-    ]).start();
-  }, [boardShakeAnim]);
+    boardShakeX.value = 0;
+    boardShakeX.value = withSequence(
+      withTiming(-6, { duration: 55 }),
+      withTiming(6, { duration: 55 }),
+      withTiming(-4, { duration: 55 }),
+      withTiming(4, { duration: 55 }),
+      withTiming(0, { duration: 55 })
+    );
+  }, [boardShakeX]);
 
   const markPinchEnd = useCallback(() => {
-    suppressTapUntilRef.current = Date.now() + 110;
+    suppressTapUntilRef.current = Date.now() + 90;
   }, []);
 
   const markPanEnd = useCallback(() => {
-    suppressTapUntilRef.current = Date.now() + 65;
+    suppressTapUntilRef.current = Date.now() + 45;
   }, []);
+
+  const handleRestartLevel = () => {
+    feedback.playTap();
+    clearScheduledTimeouts();
+    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
+    cellOwnerRef.current = new Int32Array(levelData.initialCellOwner);
+    escapingIdsRef.current.clear();
+    setArrows(generated.arrows);
+    setLives(MAX_LIVES);
+    livesRef.current = MAX_LIVES;
+    setHintTargetId(null);
+    setImpactFlash(null);
+    setCelebrating(false);
+    setStatusModal('none');
+    resetZoomTransform();
+  };
+
+  const handleEscapeComplete = useCallback(
+    (id: string) => {
+      escapingIdsRef.current.delete(id);
+      setArrows((prev) => {
+        const next = prev.filter((a) => a.id !== id);
+        if (next.length === 0) {
+          feedback.playLevelClear();
+          setCelebrating(true);
+          triggerBoardCelebrateShake();
+          setConfettiKey((k) => k + 1);
+          const modalTimer = setTimeout(() => {
+            setStatusModal('cleared');
+          }, 420);
+          timersRef.current.push(modalTimer);
+        }
+        return next;
+      });
+    },
+    [triggerBoardCelebrateShake]
+  );
+
+  const handleBlockedComplete = useCallback((id: string) => {
+    setArrows((prev) =>
+      prev.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              state: 'idle',
+              isBlocked: true,
+              bumpDistancePx: undefined,
+              bumpDurationMs: undefined,
+            }
+          : a
+      )
+    );
+    if (livesRef.current === 0) {
+      setStatusModal('failed');
+    }
+  }, []);
+
+  const handlePenaltyComplete = useCallback((id: string) => {
+    setArrows((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, state: 'idle' } : a))
+    );
+    if (livesRef.current === 0) {
+      setStatusModal('failed');
+    }
+  }, []);
+
+  const handleTapArrow = useCallback(
+    (arrow: ArrowTile) => {
+      if (statusModalRef.current !== 'none') return;
+      if (arrow.state !== 'idle') return;
+      if (escapingIdsRef.current.has(arrow.id)) return;
+
+      feedback.unlock();
+      const gridSize = generated.gridSize;
+      const { clear, blockerCell, freeCells } = traceArrowPathFast(
+        occGridRef.current,
+        arrow,
+        gridSize
+      );
+
+      if (clear) {
+        // Release occupancy & cell ownership synchronously so rapid multi-taps on inner arrows never drop
+        escapingIdsRef.current.add(arrow.id);
+        const occ = occGridRef.current;
+        const owners = cellOwnerRef.current;
+        for (let i = 0; i < arrow.cells.length; i++) {
+          const pt = arrow.cells[i];
+          const flatIdx = pt.r * gridSize + pt.c;
+          occ[flatIdx] = 0;
+          owners[flatIdx] = -1;
+        }
+
+        feedback.playEscape();
+        setHintTargetId((prev) => (prev === arrow.id ? null : prev));
+        setArrows((prev) =>
+          prev.map((a) => (a.id === arrow.id ? { ...a, state: 'escaping' } : a))
+        );
+        return;
+      }
+
+      // Blocked: slide across open gap, hit blocker, turn permanently red, and rebound elastically
+      const isFirstPenalty = !arrow.isBlocked;
+      const singleHeadOffset =
+        arrow.cells.length === 1 ? Math.min(cellStep * 0.22, 14) : 0;
+      const gapCenterDist = (freeCells + 1) * cellStep - singleHeadOffset;
+      const tipContactBuffer = Math.max(cellStep * 0.34, strokeWidth * 1.8);
+      const bumpDistancePx = Math.max(cellStep * 0.28, gapCenterDist - tipContactBuffer);
+
+      const hitDurationMs = 70 + freeCells * 16;
+      const reboundDurationMs = 130 + freeCells * 20;
+      const bumpDurationMs = hitDurationMs + reboundDurationMs;
+
+      feedback.playTap();
+
+      if (blockerCell) {
+        scheduleTimeout(() => {
+          feedback.playBlocked();
+          if (isFirstPenalty) {
+            triggerHeartsShake();
+          }
+          setImpactFlash({ key: Date.now(), pt: blockerCell });
+          scheduleTimeout(() => {
+            setImpactFlash((curr) =>
+              curr && curr.pt.r === blockerCell.r && curr.pt.c === blockerCell.c
+                ? null
+                : curr
+            );
+          }, 300);
+        }, Math.round(bumpDurationMs * 0.34));
+      } else {
+        feedback.playBlocked();
+        if (isFirstPenalty) {
+          triggerHeartsShake();
+        }
+      }
+
+      if (isFirstPenalty) {
+        const nextLives = Math.max(0, livesRef.current - 1);
+        livesRef.current = nextLives;
+        setLives(nextLives);
+      }
+
+      setArrows((prev) =>
+        prev.map((a) =>
+          a.id === arrow.id
+            ? {
+                ...a,
+                state: 'blocked',
+                bumpDistancePx,
+                bumpDurationMs,
+              }
+            : a
+        )
+      );
+    },
+    [cellStep, generated.gridSize, strokeWidth, triggerHeartsShake]
+  );
+
+  // O(1) Grid-cell tap resolver running straight from RNGH Tap coordinates
+  const handleBoardTap = useCallback(
+    (
+      screenX: number,
+      screenY: number,
+      curScale: number,
+      curTx: number,
+      curTy: number,
+      curBoardSize: number
+    ) => {
+      if (statusModalRef.current !== 'none') return;
+      if (Date.now() < suppressTapUntilRef.current) return;
+      if (curBoardSize <= 0) return;
+
+      const half = curBoardSize * 0.5;
+      const safeScale = curScale > 0 ? curScale : 1;
+      const baseX = half + (screenX - half - curTx) / safeScale;
+      const baseY = half + (screenY - half - curTy) / safeScale;
+
+      const vx = (baseX / curBoardSize) * BOARD_VIEWBOX;
+      const vy = (baseY / curBoardSize) * BOARD_VIEWBOX;
+
+      const gridSize = generated.gridSize;
+      const fc = (vx - BOARD_PAD) / cellStep;
+      const fr = (vy - BOARD_PAD) / cellStep;
+      const r0 = Math.floor(fr);
+      const c0 = Math.floor(fc);
+
+      const owners = cellOwnerRef.current;
+      const baseArrows = generated.arrows;
+      const liveMap = arrowsByIdRef.current;
+
+      // Fast path: direct cell hit
+      if (r0 >= 0 && r0 < gridSize && c0 >= 0 && c0 < gridSize) {
+        const ownerIdx = owners[r0 * gridSize + c0];
+        if (ownerIdx >= 0) {
+          const live = liveMap.get(baseArrows[ownerIdx].id);
+          if (live && live.state === 'idle') {
+            handleTapArrow(live);
+            return;
+          }
+        }
+      }
+
+      // Nearest occupied cell fallback within ~0.68 cell radius for edge/corner finger taps
+      let bestArrow: ArrowTile | null = null;
+      let bestDistSq = 0.68 * 0.68;
+      const rMin = Math.max(0, r0 - 1);
+      const rMax = Math.min(gridSize - 1, r0 + 1);
+      const cMin = Math.max(0, c0 - 1);
+      const cMax = Math.min(gridSize - 1, c0 + 1);
+
+      for (let rr = rMin; rr <= rMax; rr++) {
+        const dy = fr - (rr + 0.5);
+        for (let cc = cMin; cc <= cMax; cc++) {
+          const ownerIdx = owners[rr * gridSize + cc];
+          if (ownerIdx < 0) continue;
+          const dx = fc - (cc + 0.5);
+          const dSq = dx * dx + dy * dy;
+          if (dSq < bestDistSq) {
+            const live = liveMap.get(baseArrows[ownerIdx].id);
+            if (live && live.state === 'idle') {
+              bestDistSq = dSq;
+              bestArrow = live;
+            }
+          }
+        }
+      }
+
+      if (bestArrow) {
+        handleTapArrow(bestArrow);
+      }
+    },
+    [cellStep, generated.arrows, generated.gridSize, handleTapArrow]
+  );
 
   const pinchGesture = useMemo(
     () =>
@@ -256,9 +537,29 @@ export function GameplayScreen({
     [boardSize, markPanEnd, panMoved, savedTx, savedTy, scale, tx, ty]
   );
 
+  const tapGesture = useMemo(
+    () =>
+      Gesture.Tap()
+        .maxDuration(280)
+        .maxDistance(13)
+        .onEnd((e, success) => {
+          'worklet';
+          if (!success) return;
+          runOnJS(handleBoardTap)(
+            e.x,
+            e.y,
+            scale.value,
+            tx.value,
+            ty.value,
+            boardSize.value
+          );
+        }),
+    [boardSize, handleBoardTap, scale, tx, ty]
+  );
+
   const composedGesture = useMemo(
-    () => Gesture.Simultaneous(pinchGesture, panGesture),
-    [pinchGesture, panGesture]
+    () => Gesture.Simultaneous(pinchGesture, panGesture, tapGesture),
+    [pinchGesture, panGesture, tapGesture]
   );
 
   const zoomAnimatedStyle = useAnimatedStyle(() => ({
@@ -269,191 +570,75 @@ export function GameplayScreen({
     ],
   }));
 
-  const activeArrows = useMemo(
-    () => arrows.filter((a) => a.state !== 'escaping'),
-    [arrows]
-  );
+  const heartsAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: heartsShakeX.value }],
+  }));
 
-  const cellStep = (BOARD_VIEWBOX - BOARD_PAD * 2) / generated.gridSize;
-  const strokeWidth = Math.min(5.0, Math.max(1.25, cellStep * 0.145));
-  const arrowTipScale = Math.min(1.22, Math.max(0.28, cellStep / 33));
-  const dotRadius = Math.min(2.3, Math.max(0.65, cellStep * 0.052));
+  const boardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: boardShakeX.value }],
+  }));
 
-  const gridDots = useMemo(
-    () =>
-      Array.from({ length: generated.gridSize * generated.gridSize }).map(
-        (_, index) => {
-          const r = Math.floor(index / generated.gridSize);
-          const c = index % generated.gridSize;
-          const { x, y } = cellCenter({ r, c }, cellStep);
-          return (
-            <Circle
-              key={`dot-${r}-${c}`}
-              cx={x}
-              cy={y}
-              r={dotRadius}
-              fill="#CBD5E1"
-            />
-          );
-        }
-      ),
-    [generated.gridSize, cellStep, dotRadius]
-  );
+  // Batch ALL static idle arrows into at most ~5 compound <Path> layers + separate out only the 1-3 animating arrows
+  const {
+    remainingCount,
+    haloD,
+    blackStemD,
+    blackHeadD,
+    redStemD,
+    redHeadD,
+    hintStemD,
+    hintHeadD,
+    animatingArrows,
+  } = useMemo(() => {
+    const haloParts: string[] = [];
+    const blackStemParts: string[] = [];
+    const blackHeadParts: string[] = [];
+    const redStemParts: string[] = [];
+    const redHeadParts: string[] = [];
+    let hintedStem = '';
+    let hintedHead = '';
+    const active: ArrowTile[] = [];
+    let remaining = 0;
 
-  const handleRestartLevel = () => {
-    feedback.playTap();
-    clearScheduledTimeouts();
-    occGridRef.current = buildOccupancyGrid(generated.arrows, generated.gridSize);
-    escapingIdsRef.current.clear();
-    setArrows(generated.arrows);
-    setLives(MAX_LIVES);
-    livesRef.current = MAX_LIVES;
-    setHintTargetId(null);
-    setImpactFlash(null);
-    setCelebrating(false);
-    setStatusModal('none');
-    resetZoomTransform();
-  };
-
-  const handleEscapeComplete = useCallback(
-    (id: string) => {
-      escapingIdsRef.current.delete(id);
-      setArrows((prev) => {
-        const next = prev.filter((a) => a.id !== id);
-        if (next.length === 0) {
-          feedback.playLevelClear();
-          setCelebrating(true);
-          triggerBoardCelebrateShake();
-          setConfettiKey((k) => k + 1);
-          const modalTimer = setTimeout(() => {
-            setStatusModal('cleared');
-          }, 450);
-          timersRef.current.push(modalTimer);
-        }
-        return next;
-      });
-    },
-    [triggerBoardCelebrateShake]
-  );
-
-  const handleBlockedComplete = useCallback((id: string) => {
-    setArrows((prev) =>
-      prev.map((a) =>
-        a.id === id
-          ? {
-              ...a,
-              state: 'idle',
-              isBlocked: true,
-              bumpDistancePx: undefined,
-              bumpDurationMs: undefined,
-            }
-          : a
-      )
-    );
-    if (livesRef.current === 0) {
-      setStatusModal('failed');
-    }
-  }, []);
-
-  const handlePenaltyComplete = useCallback((id: string) => {
-    setArrows((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, state: 'idle' } : a))
-    );
-    if (livesRef.current === 0) {
-      setStatusModal('failed');
-    }
-  }, []);
-
-  const handleTapArrow = useCallback((arrow: ArrowTile) => {
-    if (statusModalRef.current !== 'none') return;
-    if (arrow.state !== 'idle') return;
-    if (escapingIdsRef.current.has(arrow.id)) return;
-    if (Date.now() < suppressTapUntilRef.current) return;
-
-    feedback.unlock();
-    const gridSize = generated.gridSize;
-    const { clear, blockerCell, freeCells } = traceArrowPathFast(
-      occGridRef.current,
-      arrow,
-      gridSize
-    );
-
-    if (clear) {
-      // Immediately release occupancy synchronously so rapid multi-taps on inner arrows never wait for React commit
-      escapingIdsRef.current.add(arrow.id);
-      const occ = occGridRef.current;
-      for (let i = 0; i < arrow.cells.length; i++) {
-        const pt = arrow.cells[i];
-        occ[pt.r * gridSize + pt.c] = 0;
+    for (let i = 0; i < arrows.length; i++) {
+      const a = arrows[i];
+      if (a.state !== 'escaping') {
+        remaining += 1;
       }
-
-      feedback.playEscape();
-      setHintTargetId((prev) => (prev === arrow.id ? null : prev));
-      setArrows((prev) =>
-        prev.map((a) => (a.id === arrow.id ? { ...a, state: 'escaping' } : a))
-      );
-      return;
-    }
-
-    // Blocked: slide across open gap, hit blocker, turn permanently red, and rebound elastically
-    const isFirstPenalty = !arrow.isBlocked;
-    const singleHeadOffset =
-      arrow.cells.length === 1 ? Math.min(cellStep * 0.22, 14) : 0;
-    const gapCenterDist = (freeCells + 1) * cellStep - singleHeadOffset;
-    const tipContactBuffer = Math.max(cellStep * 0.34, strokeWidth * 1.8);
-    const bumpDistancePx = Math.max(cellStep * 0.28, gapCenterDist - tipContactBuffer);
-
-    const hitDurationMs = 80 + freeCells * 20;
-    const reboundDurationMs = 140 + freeCells * 25;
-    const bumpDurationMs = hitDurationMs + reboundDurationMs;
-
-    feedback.playTap();
-
-    if (blockerCell) {
-      scheduleTimeout(() => {
-        feedback.playBlocked();
-        if (isFirstPenalty) {
-          triggerHeartsShake();
-        }
-        setImpactFlash({ key: Date.now(), pt: blockerCell });
-        scheduleTimeout(() => {
-          setImpactFlash((curr) =>
-            curr && curr.pt.r === blockerCell.r && curr.pt.c === blockerCell.c
-              ? null
-              : curr
-          );
-        }, 360);
-      }, Math.round(bumpDurationMs * 0.34));
-    } else {
-      feedback.playBlocked();
-      if (isFirstPenalty) {
-        triggerHeartsShake();
+      if (a.state !== 'idle') {
+        active.push(a);
+        continue;
+      }
+      const geom = levelData.geomById.get(a.id);
+      if (!geom) continue;
+      haloParts.push(geom.restD);
+      if (a.id === hintTargetId) {
+        hintedStem = geom.restD;
+        hintedHead = geom.restHeadD;
+      } else if (a.isBlocked) {
+        redStemParts.push(geom.restD);
+        redHeadParts.push(geom.restHeadD);
+      } else {
+        blackStemParts.push(geom.restD);
+        blackHeadParts.push(geom.restHeadD);
       }
     }
 
-    // Deduct 1 heart ONLY on the first blocked tap of this arrow
-    if (isFirstPenalty) {
-      const nextLives = Math.max(0, livesRef.current - 1);
-      livesRef.current = nextLives;
-      setLives(nextLives);
-    }
-
-    setArrows((prev) =>
-      prev.map((a) =>
-        a.id === arrow.id
-          ? {
-              ...a,
-              state: 'blocked',
-              bumpDistancePx,
-              bumpDurationMs,
-            }
-          : a
-      )
-    );
-  }, [cellStep, generated.gridSize, strokeWidth, triggerHeartsShake]);
+    return {
+      remainingCount: remaining,
+      haloD: haloParts.join(' '),
+      blackStemD: blackStemParts.join(' '),
+      blackHeadD: blackHeadParts.join(' '),
+      redStemD: redStemParts.join(' '),
+      redHeadD: redHeadParts.join(' '),
+      hintStemD: hintedStem,
+      hintHeadD: hintedHead,
+      animatingArrows: active,
+    };
+  }, [arrows, hintTargetId, levelData.geomById]);
 
   const handleUseHint = () => {
-    if (statusModal !== 'none' || activeArrows.length === 0) return;
+    if (statusModal !== 'none' || remainingCount === 0) return;
     if (hints <= 0) {
       feedback.playBlocked();
       return;
@@ -525,15 +710,10 @@ export function GameplayScreen({
           <View style={styles.navIconRotated}>
             <Navigation2 size={12} color="#334155" fill="#334155" />
           </View>
-          <Text style={styles.remainingText}>{activeArrows.length}</Text>
+          <Text style={styles.remainingText}>{remainingCount}</Text>
         </View>
 
-        <RNAnimated.View
-          style={[
-            styles.heartsRow,
-            { transform: [{ translateX: heartsShakeAnim }] },
-          ]}
-        >
+        <Reanimated.View style={[styles.heartsRow, heartsAnimatedStyle]}>
           {Array.from({ length: MAX_LIVES }).map((_, idx) => {
             const active = idx < lives;
             return (
@@ -546,7 +726,7 @@ export function GameplayScreen({
               />
             );
           })}
-        </RNAnimated.View>
+        </Reanimated.View>
 
         <View style={[styles.difficultyPill, { backgroundColor: difficultyBg }]}>
           <Text style={[styles.difficultyLabel, { color: difficultyText }]}>
@@ -555,9 +735,9 @@ export function GameplayScreen({
         </View>
       </View>
 
-      {/* Central Dotted-Matrix Board Card with Pinch-to-Zoom & Pan */}
+      {/* Central Dotted-Matrix Board Card with Pinch-to-Zoom, Pan & O(1) Tap */}
       <View style={styles.boardOuter}>
-        <RNAnimated.View
+        <Reanimated.View
           onLayout={(e) => {
             const w = e.nativeEvent.layout.width;
             if (w > 0) boardSize.value = w;
@@ -565,55 +745,168 @@ export function GameplayScreen({
           style={[
             styles.boardCard,
             celebrating && styles.boardCardCelebrating,
-            { transform: [{ translateX: boardShakeAnim }] },
+            boardAnimatedStyle,
           ]}
         >
           <GestureDetector gesture={composedGesture}>
-            <Reanimated.View style={[styles.zoomLayer, zoomAnimatedStyle]}>
-              <Svg
-                width="100%"
-                height="100%"
-                viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
-              >
-                {/* Dotted Grid Matrix */}
-                {gridDots}
-
-                {/* Curved & Winding Path Arrows */}
-                {arrows.map((arrow) => (
-                  <AnimatedPathArrow
-                    key={arrow.id}
-                    arrow={arrow}
-                    cellStep={cellStep}
-                    strokeWidth={strokeWidth}
-                    arrowTipScale={arrowTipScale}
-                    baseStrokeColor="#0F172A"
-                    isHinted={arrow.id === hintTargetId}
-                    onTap={handleTapArrow}
-                    onEscapeComplete={handleEscapeComplete}
-                    onBlockedComplete={handleBlockedComplete}
-                    onPenaltyComplete={handlePenaltyComplete}
+            <View collapsable={false} style={styles.zoomLayer}>
+              <Reanimated.View style={[styles.zoomLayer, zoomAnimatedStyle]}>
+                <Svg
+                  pointerEvents="none"
+                  width="100%"
+                  height="100%"
+                  viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
+                >
+                  {/* 1-draw-call Dotted Grid Matrix */}
+                  <Path
+                    d={levelData.dotsPathD}
+                    fill="none"
+                    stroke="#CBD5E1"
+                    strokeWidth={dotRadius * 2}
+                    strokeLinecap="round"
                   />
-                ))}
 
-                {/* Collision ripple highlight at obstructing cell */}
-                {impactFlash && (() => {
-                  const center = cellCenter(impactFlash.pt, cellStep);
-                  return (
-                    <Circle
-                      key={impactFlash.key}
-                      cx={center.x}
-                      cy={center.y}
-                      r={Math.max(12, cellStep * 0.38)}
-                      fill="rgba(239, 68, 68, 0.14)"
-                      stroke="#EF4444"
-                      strokeWidth={2.5}
+                  {/* Optional Hint Glow Aura */}
+                  {hintStemD !== '' && (
+                    <Path
+                      d={hintStemD}
+                      fill="none"
+                      stroke="rgba(37, 137, 255, 0.25)"
+                      strokeWidth={strokeWidth + 8}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     />
-                  );
-                })()}
-              </Svg>
-            </Reanimated.View>
+                  )}
+
+                  {/* Batched White Halo Backing for All Resting Arrows */}
+                  {haloD !== '' && (
+                    <Path
+                      d={haloD}
+                      fill="none"
+                      stroke="#FFFFFF"
+                      strokeWidth={haloWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={0.9}
+                    />
+                  )}
+
+                  {/* Batched Normal Resting Arrows (Stems + Heads) */}
+                  {blackStemD !== '' && (
+                    <Path
+                      d={blackStemD}
+                      fill="none"
+                      stroke="#0F172A"
+                      strokeWidth={strokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {blackHeadD !== '' && (
+                    <Path
+                      d={blackHeadD}
+                      fill="#0F172A"
+                      stroke="#0F172A"
+                      strokeWidth={headStrokeWidth}
+                      strokeLinejoin="round"
+                    />
+                  )}
+
+                  {/* Batched Permanently-Blocked Red Resting Arrows (Stems + Heads) */}
+                  {redStemD !== '' && (
+                    <Path
+                      d={redStemD}
+                      fill="none"
+                      stroke={BLOCKED_RED}
+                      strokeWidth={strokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {redHeadD !== '' && (
+                    <Path
+                      d={redHeadD}
+                      fill={BLOCKED_RED}
+                      stroke={BLOCKED_RED}
+                      strokeWidth={headStrokeWidth}
+                      strokeLinejoin="round"
+                    />
+                  )}
+
+                  {/* Hinted Resting Arrow Highlight (Stem + Head) */}
+                  {hintStemD !== '' && (
+                    <Path
+                      d={hintStemD}
+                      fill="none"
+                      stroke={ACTIVE_BLUE}
+                      strokeWidth={strokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {hintHeadD !== '' && (
+                    <Path
+                      d={hintHeadD}
+                      fill={ACTIVE_BLUE}
+                      stroke={ACTIVE_BLUE}
+                      strokeWidth={headStrokeWidth}
+                      strokeLinejoin="round"
+                    />
+                  )}
+
+                  {/* Active UI-thread Reanimated Runners (mounted ONLY while moving) */}
+                  {animatingArrows.map((arrow) => {
+                    const geom = levelData.geomById.get(arrow.id);
+                    if (!geom || arrow.state === 'idle') return null;
+                    const restColor = arrow.isBlocked
+                      ? BLOCKED_RED
+                      : arrow.id === hintTargetId
+                        ? ACTIVE_BLUE
+                        : '#0F172A';
+                    return (
+                      <ActiveArrowRunner
+                        key={arrow.id}
+                        id={arrow.id}
+                        mode={arrow.state}
+                        isBlocked={Boolean(arrow.isBlocked)}
+                        restColor={restColor}
+                        strokeWidth={strokeWidth}
+                        arrowTipScale={arrowTipScale}
+                        cellStep={cellStep}
+                        bumpDistancePx={arrow.bumpDistancePx}
+                        bumpDurationMs={arrow.bumpDurationMs}
+                        geom={geom}
+                        showHintHalo={
+                          arrow.id === hintTargetId ||
+                          (arrow.state === 'escaping' && !arrow.isBlocked)
+                        }
+                        onEscapeComplete={handleEscapeComplete}
+                        onBlockedComplete={handleBlockedComplete}
+                        onPenaltyComplete={handlePenaltyComplete}
+                      />
+                    );
+                  })}
+
+                  {/* Collision ripple highlight at obstructing cell */}
+                  {impactFlash && (() => {
+                    const center = cellCenter(impactFlash.pt, cellStep);
+                    return (
+                      <Circle
+                        key={impactFlash.key}
+                        cx={center.x}
+                        cy={center.y}
+                        r={Math.max(12, cellStep * 0.38)}
+                        fill="rgba(239, 68, 68, 0.14)"
+                        stroke="#EF4444"
+                        strokeWidth={2.5}
+                      />
+                    );
+                  })()}
+                </Svg>
+              </Reanimated.View>
+            </View>
           </GestureDetector>
-        </RNAnimated.View>
+        </Reanimated.View>
       </View>
 
       {/* Celebratory Confetti Overlay */}

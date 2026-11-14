@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SplashScreen from 'expo-splash-screen';
 import { GameplayScreen } from './components/GameplayScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { DailyBonusModal, SettingsModal } from './components/Modals';
@@ -99,6 +100,12 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (hydrated) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [hydrated]);
 
   useEffect(() => {
     feedback.updateSettings(settings);

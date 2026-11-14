@@ -154,7 +154,7 @@ function sliceArrowFrameWorklet(
   return { stemD, headD };
 }
 
-interface ActiveArrowRunnerProps {
+export interface ActiveArrowRunnerProps {
   id: string;
   mode: 'escaping' | 'blocked' | 'penalty_shake';
   isBlocked: boolean;
@@ -173,9 +173,9 @@ interface ActiveArrowRunnerProps {
 
 /**
  * UI-thread Reanimated worklet runner mounted ONLY while an arrow is actively animating.
- * Idle arrows remain lightweight static SVG primitives so 300+ arrow grids incur zero shared-value overhead.
+ * All idle arrows are rendered via a single batched SVG layer so 300+ arrow grids incur zero per-arrow overhead.
  */
-function ActiveArrowRunner({
+export const ActiveArrowRunner = memo(function ActiveArrowRunner({
   id,
   mode,
   isBlocked,
@@ -217,10 +217,10 @@ function ActiveArrowRunner({
   const peakBump = bumpDistancePx ?? Math.max(24, cellStep * 0.65);
   const duration =
     mode === 'escaping'
-      ? Math.min(360, Math.max(260, 220 + geom.bodyLen * 0.3))
+      ? Math.min(300, Math.max(200, 175 + geom.bodyLen * 0.24))
       : mode === 'blocked'
-        ? (bumpDurationMs ?? 520)
-        : 240;
+        ? (bumpDurationMs ?? 300)
+        : 190;
 
   useEffect(() => {
     progress.value = 0;
@@ -379,7 +379,7 @@ function ActiveArrowRunner({
       />
     </G>
   );
-}
+});
 
 /**
  * High-performance Arrow Renderer:
