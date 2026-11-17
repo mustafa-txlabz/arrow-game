@@ -37,11 +37,12 @@ import {
   Lightbulb,
   Minimize2,
   Navigation2,
-  PartyPopper,
   RotateCcw,
   Settings,
+  Video,
 } from 'lucide-react-native';
-import type { ArrowTile, GridPoint } from '../types/game';
+import { LinearGradient } from 'expo-linear-gradient';
+import type { AdPlacement, ArrowTile, GridPoint } from '../types/game';
 import {
   BOARD_PAD,
   BOARD_VIEWBOX,
@@ -58,13 +59,17 @@ import {
 import { feedback } from '../utils/soundAndHaptics';
 import { ActiveArrowRunner } from './AnimatedPathArrow';
 import { ConfettiBurst } from './ConfettiBurst';
+import { LevelCompleteModal } from './LevelCompleteModal';
 
 interface GameplayScreenProps {
   level: number;
   hints: number;
+  isAdShowing?: boolean;
   onBackHome: () => void;
   onOpenSettings: () => void;
   onConsumeHint: () => boolean;
+  onGrantHint: (amount: number) => void;
+  onRequestAd: (placement: AdPlacement, onRewarded: () => void) => void;
   onLevelComplete: () => void;
 }
 
@@ -184,9 +189,12 @@ function buildBatchPaths(
 export function GameplayScreen({
   level,
   hints,
+  isAdShowing = false,
   onBackHome,
   onOpenSettings,
   onConsumeHint,
+  onGrantHint,
+  onRequestAd,
   onLevelComplete,
 }: GameplayScreenProps) {
   const generated = useMemo(() => generateLevel(level), [level]);
@@ -203,6 +211,7 @@ export function GameplayScreen({
   const [confettiKey, setConfettiKey] = useState<number>(0);
   const [statusModal, setStatusModal] = useState<'none' | 'cleared' | 'failed'>('none');
   const [isZoomed, setIsZoomed] = useState<boolean>(false);
+  const [bonusHintClaimed, setBonusHintClaimed] = useState<boolean>(false);
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
@@ -330,6 +339,7 @@ export function GameplayScreen({
     setHintTargetId(null);
     setImpactFlash(null);
     setCelebrating(false);
+    setBonusHintClaimed(false);
     setStatusModal('none');
     resetZoomTransform(false);
     feedback.unlock();
@@ -417,9 +427,28 @@ export function GameplayScreen({
     setHintTargetId(null);
     setImpactFlash(null);
     setCelebrating(false);
+    setBonusHintClaimed(false);
     setStatusModal('none');
     resetZoomTransform(false);
   };
+
+  const handleReviveWithFullHearts = useCallback(() => {
+    clearScheduledTimeouts();
+    livesRef.current = MAX_LIVES;
+    setLives(MAX_LIVES);
+    setImpactFlash(null);
+    setArrows((prev) =>
+      prev.map((a) => ({
+        ...a,
+        state: 'idle',
+        isBlocked: false,
+        bumpDistancePx: undefined,
+        bumpDurationMs: undefined,
+      }))
+    );
+    setStatusModal('none');
+    feedback.playReward();
+  }, []);
 
   const handleEscapeComplete = useCallback(
     (id: string) => {
@@ -433,6 +462,7 @@ export function GameplayScreen({
           setConfettiKey((k) => k + 1);
           const modalTimer = setTimeout(() => {
             setStatusModal('cleared');
+            setConfettiKey((k) => k + 1);
           }, 420);
           timersRef.current.push(modalTimer);
         }
@@ -819,7 +849,9 @@ export function GameplayScreen({
   const handleUseHint = () => {
     if (statusModal !== 'none' || remainingCount === 0) return;
     if (hints <= 0) {
-      feedback.playBlocked();
+      onRequestAd('rewarded_hint', () => {
+        onGrantHint(1);
+      });
       return;
     }
     const candidate = findEscapableArrow(
@@ -1146,16 +1178,27 @@ export function GameplayScreen({
           <TouchableOpacity
             activeOpacity={0.88}
             onPress={handleUseHint}
-            accessibilityLabel={`Use hint (${hints} remaining)`}
+            accessibilityLabel={
+              hints > 0
+                ? `Use hint (${hints} remaining)`
+                : 'Watch ad to earn 1 hint'
+            }
             style={[
               styles.hintFab,
               hintTargetId ? styles.hintFabActive : styles.hintFabDefault,
             ]}
           >
-            <Lightbulb size={24} color={hints > 0 ? '#2589FF' : '#94A3B8'} />
-            <View style={styles.hintBadge}>
-              <Text style={styles.hintBadgeText}>{hints}</Text>
-            </View>
+            <Lightbulb size={24} color="#2589FF" />
+            {hints > 0 ? (
+              <View style={styles.hintBadge}>
+                <Text style={styles.hintBadgeText}>{hints}</Text>
+              </View>
+            ) : (
+              <View style={styles.hintAdBadge}>
+                <Video size={10} color="#FFFFFF" strokeWidth={2.6} />
+                <Text style={styles.hintAdBadgeText}>AD</Text>
+              </View>
+            )}
           </TouchableOpacity>
 
           <View style={styles.footerSlotRight} />
@@ -1165,48 +1208,41 @@ export function GameplayScreen({
       {/* Celebratory Confetti Overlay */}
       <ConfettiBurst triggerKey={confettiKey} />
 
-      {/* Level Complete Modal */}
-      <Modal
+      {/* Level Complete Celebration Screen */}
+      <LevelCompleteModal
         visible={statusModal === 'cleared'}
-        transparent
-        animationType="fade"
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={[styles.statusBadge, styles.statusSuccessBg]}>
-              <PartyPopper size={24} color="#059669" />
-            </View>
-            <Text style={styles.modalTitle}>Level {level} Cleared</Text>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => {
-                  feedback.playTap();
-                  onLevelComplete();
-                }}
-                style={styles.primaryModalBtn}
-              >
-                <Text style={styles.primaryModalBtnText}>Next Level</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={() => {
-                  onLevelComplete();
-                  onBackHome();
-                }}
-                style={styles.secondaryModalBtn}
-              >
-                <Text style={styles.secondaryModalBtnText}>Back to Home</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+        isAdShowing={isAdShowing}
+        level={level}
+        lives={lives}
+        totalArrows={generated.arrows.length}
+        gridSize={generated.gridSize}
+        difficulty={generated.difficulty}
+        confettiKey={confettiKey}
+        bonusClaimed={bonusHintClaimed}
+        onWatchBonusAd={() => {
+          onRequestAd('rewarded_victory_bonus', () => {
+            setBonusHintClaimed(true);
+            onGrantHint(1);
+          });
+        }}
+        onNextLevel={() => {
+          feedback.playTap();
+          if (level >= 3 && level % 2 === 1) {
+            onRequestAd('interstitial_level', onLevelComplete);
+          } else {
+            onLevelComplete();
+          }
+        }}
+        onBackHome={() => {
+          feedback.playTap();
+          onLevelComplete();
+          onBackHome();
+        }}
+      />
 
       {/* Out of Lives Modal */}
       <Modal
-        visible={statusModal === 'failed'}
+        visible={statusModal === 'failed' && !isAdShowing}
         transparent
         animationType="fade"
       >
@@ -1217,17 +1253,37 @@ export function GameplayScreen({
             </View>
             <Text style={styles.modalTitle}>Out of Lives</Text>
             <Text style={styles.modalSubtitle}>
-              Clear blocking arrows first before tapping inner paths.
+              Watch a short ad to restore all 3 hearts and continue right where you left off.
             </Text>
 
             <View style={styles.modalActions}>
               <TouchableOpacity
                 activeOpacity={0.9}
-                onPress={handleRestartLevel}
-                style={styles.primaryModalBtn}
+                onPress={() => {
+                  onRequestAd('rewarded_revive', handleReviveWithFullHearts);
+                }}
+                style={styles.reviveBtnShadow}
               >
-                <RotateCcw size={16} color="#FFFFFF" />
-                <Text style={styles.primaryModalBtnText}>
+                <LinearGradient
+                  colors={['#10B981', '#059669']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.reviveModalBtn}
+                >
+                  <Video size={17} color="#FFFFFF" strokeWidth={2.4} />
+                  <Text style={styles.primaryModalBtnText}>
+                    Watch Ad · Revive (3 Hearts)
+                  </Text>
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={handleRestartLevel}
+                style={styles.retryOutlineBtn}
+              >
+                <RotateCcw size={15} color="#2589FF" strokeWidth={2.3} />
+                <Text style={styles.retryOutlineBtnText}>
                   Retry Level {level}
                 </Text>
               </TouchableOpacity>
@@ -1419,6 +1475,27 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontVariant: ['tabular-nums'],
   },
+  hintAdBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -8,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#10B981',
+    paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  hintAdBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
+  },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.42)',
@@ -1447,9 +1524,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  statusSuccessBg: {
-    backgroundColor: '#D1FAE5',
   },
   statusFailBg: {
     backgroundColor: '#FFE4E6',
@@ -1491,6 +1565,40 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  reviveBtnShadow: {
+    borderRadius: 16,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 5,
+  },
+  reviveModalBtn: {
+    height: 50,
+    width: '100%',
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  retryOutlineBtn: {
+    height: 46,
+    width: '100%',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    backgroundColor: '#EFF6FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  retryOutlineBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#2589FF',
   },
   secondaryModalBtn: {
     height: 44,

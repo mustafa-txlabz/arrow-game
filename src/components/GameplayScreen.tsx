@@ -6,11 +6,11 @@ import {
   Lightbulb,
   Minimize2,
   Navigation2,
-  PartyPopper,
   RotateCcw,
   Settings,
+  Video,
 } from 'lucide-react';
-import type { ArrowTile, GridPoint } from '../types/game';
+import type { AdPlacement, ArrowTile, GridPoint } from '../types/game';
 import {
   BOARD_PAD,
   BOARD_VIEWBOX,
@@ -26,6 +26,7 @@ import {
 import { feedback } from '../utils/soundAndHaptics';
 import { AnimatedPathArrow } from './AnimatedPathArrow';
 import { ConfettiBurst } from './ConfettiBurst';
+import { LevelCompleteModal } from './LevelCompleteModal';
 
 interface GameplayScreenProps {
   level: number;
@@ -33,6 +34,8 @@ interface GameplayScreenProps {
   onBackHome: () => void;
   onOpenSettings: () => void;
   onConsumeHint: () => boolean;
+  onGrantHint: (amount: number) => void;
+  onRequestAd: (placement: AdPlacement, onRewarded: () => void) => void;
   onLevelComplete: () => void;
 }
 
@@ -51,6 +54,8 @@ export function GameplayScreen({
   onBackHome,
   onOpenSettings,
   onConsumeHint,
+  onGrantHint,
+  onRequestAd,
   onLevelComplete,
 }: GameplayScreenProps) {
   const generated = useMemo(() => generateLevel(level), [level]);
@@ -67,6 +72,7 @@ export function GameplayScreen({
   const [heartsShakeKey, setHeartsShakeKey] = useState<number>(0);
   const [statusModal, setStatusModal] = useState<'none' | 'cleared' | 'failed'>('none');
   const [isZoomed, setIsZoomed] = useState<boolean>(false);
+  const [bonusHintClaimed, setBonusHintClaimed] = useState<boolean>(false);
 
   const timersRef = useRef<number[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
@@ -287,6 +293,7 @@ export function GameplayScreen({
     setImpactFlash(null);
     setCelebrating(false);
     setHeartsShakeKey(0);
+    setBonusHintClaimed(false);
     setStatusModal('none');
     resetZoomTransform(false);
     return clearScheduledTimeouts;
@@ -351,9 +358,28 @@ export function GameplayScreen({
     setHintTargetId(null);
     setImpactFlash(null);
     setCelebrating(false);
+    setBonusHintClaimed(false);
     setStatusModal('none');
     resetZoomTransform(false);
   };
+
+  const handleReviveWithFullHearts = useCallback(() => {
+    clearScheduledTimeouts();
+    livesRef.current = MAX_LIVES;
+    setLives(MAX_LIVES);
+    setImpactFlash(null);
+    setArrows((prev) =>
+      prev.map((a) => ({
+        ...a,
+        state: 'idle',
+        isBlocked: false,
+        bumpDistancePx: undefined,
+        bumpDurationMs: undefined,
+      }))
+    );
+    setStatusModal('none');
+    feedback.playReward();
+  }, []);
 
   const handleEscapeComplete = useCallback(
     (id: string) => {
@@ -366,6 +392,7 @@ export function GameplayScreen({
           setConfettiKey((k) => k + 1);
           const modalTimer = window.setTimeout(() => {
             setStatusModal('cleared');
+            setConfettiKey((k) => k + 1);
           }, 450);
           timersRef.current.push(modalTimer);
         }
@@ -612,7 +639,9 @@ export function GameplayScreen({
   const handleUseHint = () => {
     if (statusModal !== 'none' || activeArrows.length === 0) return;
     if (hints <= 0) {
-      feedback.playBlocked();
+      onRequestAd('rewarded_hint', () => {
+        onGrantHint(1);
+      });
       return;
     }
     const candidate = findEscapableArrow(
@@ -836,17 +865,26 @@ export function GameplayScreen({
           <button
             type="button"
             onClick={handleUseHint}
-            aria-label={`Use hint (${hints} remaining)`}
+            aria-label={
+              hints > 0
+                ? `Use hint (${hints} remaining)`
+                : 'Watch ad to earn 1 hint'
+            }
             className={`pointer-events-auto relative flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-[0_8px_24px_-4px_rgba(37,137,255,0.22)] transition-transform active:scale-92 ${
               hintTargetId ? 'ring-2 ring-[#2589FF]' : 'ring-1 ring-slate-200/80'
             }`}
           >
-            <Lightbulb
-              className={`h-6 w-6 ${hints > 0 ? 'text-[#2589FF]' : 'text-slate-400'}`}
-            />
-            <span className="font-mono-tabular absolute -top-1 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#2589FF] px-1 text-[11px] font-bold text-white shadow-xs">
-              {hints}
-            </span>
+            <Lightbulb className="h-6 w-6 text-[#2589FF]" />
+            {hints > 0 ? (
+              <span className="font-mono-tabular absolute -top-1 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#2589FF] px-1 text-[11px] font-bold text-white shadow-xs">
+                {hints}
+              </span>
+            ) : (
+              <span className="absolute -top-1.5 -right-2 flex h-5 items-center gap-0.5 rounded-full border-[1.5px] border-white bg-emerald-500 px-1.5 text-[9px] font-extrabold tracking-wider text-white shadow-xs">
+                <Video className="h-2.5 w-2.5 stroke-[2.6]" />
+                <span>AD</span>
+              </span>
+            )}
           </button>
 
           <div className="flex-1" />
@@ -856,46 +894,35 @@ export function GameplayScreen({
       {/* Celebratory 60fps Confetti Cannons */}
       <ConfettiBurst triggerKey={confettiKey} />
 
-      {/* Level Complete Modal */}
-      {statusModal === 'cleared' && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/40 px-6 backdrop-blur-xs">
-          <motion.div
-            initial={{ scale: 0.92, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="w-full max-w-[320px] rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-2xl"
-          >
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600">
-              <PartyPopper className="h-6 w-6" />
-            </div>
-            <h2 className="font-display mt-3 text-2xl font-bold text-slate-900">
-              Level {level} Cleared
-            </h2>
-
-            <div className="mt-5 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  feedback.playTap();
-                  onLevelComplete();
-                }}
-                className="flex h-12 w-full items-center justify-center rounded-2xl bg-[#2589FF] text-sm font-bold text-white shadow-md shadow-blue-500/25 transition-transform active:scale-95"
-              >
-                Next Level
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onLevelComplete();
-                  onBackHome();
-                }}
-                className="flex h-11 w-full items-center justify-center rounded-2xl border border-slate-200 bg-[#F5F8FC] text-xs font-semibold text-slate-700 transition-colors hover:bg-[#EAF0F8] active:scale-95"
-              >
-                Back to Home
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
+      {/* Level Complete Celebration Screen */}
+      <LevelCompleteModal
+        visible={statusModal === 'cleared'}
+        level={level}
+        lives={lives}
+        totalArrows={generated.arrows.length}
+        gridSize={generated.gridSize}
+        difficulty={generated.difficulty}
+        bonusClaimed={bonusHintClaimed}
+        onWatchBonusAd={() => {
+          onRequestAd('rewarded_victory_bonus', () => {
+            setBonusHintClaimed(true);
+            onGrantHint(1);
+          });
+        }}
+        onNextLevel={() => {
+          feedback.playTap();
+          if (level >= 3 && level % 2 === 1) {
+            onRequestAd('interstitial_level', onLevelComplete);
+          } else {
+            onLevelComplete();
+          }
+        }}
+        onBackHome={() => {
+          feedback.playTap();
+          onLevelComplete();
+          onBackHome();
+        }}
+      />
 
       {/* Out of Lives Modal */}
       {statusModal === 'failed' && (
@@ -911,15 +938,25 @@ export function GameplayScreen({
             <h2 className="font-display mt-3 text-2xl font-bold text-slate-900">
               Out of Lives
             </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Clear blocking arrows first before tapping inner paths.
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">
+              Watch a short ad to restore all 3 hearts and continue right where you left off.
             </p>
 
             <div className="mt-5 flex flex-col gap-2.5">
               <button
                 type="button"
+                onClick={() => {
+                  onRequestAd('rewarded_revive', handleReviveWithFullHearts);
+                }}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-sm font-bold text-white shadow-md shadow-emerald-500/25 transition-transform active:scale-95"
+              >
+                <Video className="h-4 w-4 stroke-[2.4]" />
+                <span>Watch Ad · Revive (3 Hearts)</span>
+              </button>
+              <button
+                type="button"
                 onClick={handleRestartLevel}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-[#2589FF] text-sm font-bold text-white shadow-md shadow-blue-500/25 transition-transform active:scale-95"
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl border-[1.5px] border-blue-200 bg-blue-50 text-sm font-bold text-[#2589FF] transition-transform active:scale-95"
               >
                 <RotateCcw className="h-4 w-4" />
                 <span>Retry Level {level}</span>
@@ -927,7 +964,7 @@ export function GameplayScreen({
               <button
                 type="button"
                 onClick={onBackHome}
-                className="flex h-11 w-full items-center justify-center rounded-2xl border border-slate-200 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
+                className="flex h-11 w-full items-center justify-center rounded-2xl border border-slate-200 bg-[#F5F8FC] text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100"
               >
                 Back to Home
               </button>

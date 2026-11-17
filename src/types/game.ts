@@ -45,3 +45,10 @@ export interface PlayerProgress {
   lastDailyClaimDate: string | null;
   dailyStreak: number;
 }
+
+export type AdPlacement =
+  | 'rewarded_hint'
+  | 'rewarded_revive'
+  | 'rewarded_victory_bonus'
+  | 'interstitial_level';
+

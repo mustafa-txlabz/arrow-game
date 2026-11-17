@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, G, Path } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Gift, Lightbulb, Play, Settings } from 'lucide-react-native';
+import { Gift, Lightbulb, Play, Settings, Video } from 'lucide-react-native';
 import type { PlayerProgress } from '../types/game';
 
 interface HomeScreenProps {
@@ -19,6 +19,7 @@ interface HomeScreenProps {
   onPlay: () => void;
   onOpenDaily: () => void;
   onOpenSettings: () => void;
+  onWatchFreeHintAd: () => void;
 }
 
 const PREVIEW_COORDS = [24, 64, 104, 144];
@@ -32,6 +33,7 @@ export function HomeScreen({
   onPlay,
   onOpenDaily,
   onOpenSettings,
+  onWatchFreeHintAd,
 }: HomeScreenProps) {
   const isReturningPlayer = progress.currentLevel > 1;
   const floatAnim = useRef(new Animated.Value(0)).current;
@@ -98,10 +100,22 @@ export function HomeScreen({
           <Settings size={20} color="#2589FF" strokeWidth={2.2} />
         </TouchableOpacity>
 
-        <View style={styles.hintPill}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={onWatchFreeHintAd}
+          accessibilityLabel="Watch ad for 1 free hint"
+          style={[
+            styles.hintPill,
+            progress.hints === 0 && styles.hintPillEmpty,
+          ]}
+        >
           <Lightbulb size={16} color="#2589FF" strokeWidth={2.3} />
           <Text style={styles.hintCount}>{progress.hints}</Text>
-        </View>
+          <View style={styles.hintAdChip}>
+            <Video size={11} color="#FFFFFF" strokeWidth={2.5} />
+            <Text style={styles.hintAdChipText}>+1</Text>
+          </View>
+        </TouchableOpacity>
       </View>
 
       {/* Hero Section */}
@@ -275,8 +289,9 @@ const styles = StyleSheet.create({
     gap: 6,
     borderRadius: 999,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    paddingLeft: 12,
+    paddingRight: 8,
+    paddingVertical: 6,
     borderWidth: 1,
     borderColor: 'rgba(226, 232, 240, 0.85)',
     shadowColor: '#0F172A',
@@ -285,11 +300,29 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     elevation: 2,
   },
+  hintPillEmpty: {
+    borderColor: '#6EE7B7',
+    backgroundColor: '#F0FDF4',
+  },
   hintCount: {
     fontSize: 14,
     fontWeight: '700',
     color: '#1E293B',
     fontVariant: ['tabular-nums'],
+  },
+  hintAdChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#10B981',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  hintAdChipText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   hero: {
     alignItems: 'center',

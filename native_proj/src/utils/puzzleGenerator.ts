@@ -228,23 +228,29 @@ export interface ShapeRules {
   allowUTurns: boolean;
 }
 
-type ArrowArchetype = 'winding_pipe' | 'c_clamp' | 's_curve' | 'short_key';
+type ArrowArchetype =
+  | 'spiral_coil'
+  | 'zigzag_snake'
+  | 'u_hook'
+  | 's_curve'
+  | 'winding_pipe'
+  | 'short_key';
 
 export function getShapeRulesForLevel(level: number): ShapeRules {
   const safeLevel = Math.max(1, Math.floor(level));
   if (safeLevel === 1) {
-    return { maxBends: 2, allowUTurns: false };
+    return { maxBends: 3, allowUTurns: false };
   }
   if (safeLevel <= 4) {
-    return { maxBends: 3, allowUTurns: true };
-  }
-  if (safeLevel <= 12) {
     return { maxBends: 5, allowUTurns: true };
   }
-  if (safeLevel <= 30) {
-    return { maxBends: 7, allowUTurns: true };
+  if (safeLevel <= 12) {
+    return { maxBends: 8, allowUTurns: true };
   }
-  return { maxBends: 10, allowUTurns: true };
+  if (safeLevel <= 30) {
+    return { maxBends: 10, allowUTurns: true };
+  }
+  return { maxBends: 14, allowUTurns: true };
 }
 
 interface LevelProgressionTargets {
@@ -266,31 +272,31 @@ function getLevelTargets(level: number): LevelProgressionTargets {
 
   const totalCells = gridSize * gridSize;
 
-  // High-density wall-to-wall labyrinth occupancy: ~90% on Lv 1 climbing cleanly to ~94%-96%
+  // High-density wall-to-wall labyrinth occupancy: ~90% on Lv 1 climbing cleanly to ~95%-96.5%
   const baseFill =
     safeLevel === 1
       ? 0.9
       : safeLevel === 2
         ? 0.93
-        : Math.min(0.96, 0.93 + tierProgress * 0.02 + Math.min(0.012, tier * 0.001));
+        : Math.min(0.965, 0.935 + tierProgress * 0.02 + Math.min(0.014, tier * 0.0012));
   const targetOccupied = Math.min(totalCells, Math.round(totalCells * baseFill));
 
-  // Target average arrow length tightens smoothly from ~3.3 on early boards to ~2.95 on giant 26x26-32x32 boards
+  // Balanced average length (~3.4–3.75) to sustain both 100–275+ arrow boards AND rich 5–15 cell multi-bend snakes
   const avgArrowLen =
     safeLevel === 1
-      ? 3.3
-      : Math.max(2.92, 3.32 - tierProgress * 0.18 - complexityFactor * 0.22);
+      ? 3.35
+      : Math.min(3.82, 3.45 + tierProgress * 0.14 + complexityFactor * 0.22);
   const targetArrows = Math.max(
     9,
     Math.round(targetOccupied / avgArrowLen)
   );
 
-  // Tight opening bottlenecks even on 200-330+ arrow boards
+  // Tighter opening bottlenecks on higher grids so players genuinely hunt for entry points
   const idealInitFree =
-    safeLevel <= 2 ? 3 : Math.max(2, Math.floor(gridSize * 0.42));
+    safeLevel <= 2 ? 3 : Math.max(2, Math.floor(gridSize * 0.34));
 
-  // Keep 1-cell blockers minimal (<2.5% of arrows) just to seal isolated pockets on huge grids
-  const maxOneCell = gridSize <= 8 ? 0 : Math.min(8, Math.floor(gridSize / 4));
+  // Keep 1-cell blockers minimal just to seal rare isolated pockets on giant grids
+  const maxOneCell = gridSize <= 8 ? 0 : Math.min(6, Math.floor(gridSize / 5));
 
   return {
     gridSize,
@@ -391,6 +397,8 @@ interface AttemptMetrics {
   mediumCurveCount: number;
   shortKeyCount: number;
   oneCellCount: number;
+  multiBendCount: number;
+  deepBendCount: number;
   totalBends: number;
 }
 
@@ -430,6 +438,8 @@ function evaluatePuzzleComplexityFast(
   let mediumCurveCount = 0;
   let shortKeyCount = 0;
   let oneCellCount = 0;
+  let multiBendCount = 0;
+  let deepBendCount = 0;
   let totalBends = 0;
 
   for (let i = 0; i < n; i++) {
@@ -444,9 +454,13 @@ function evaluatePuzzleComplexityFast(
     dirIdx[i] =
       a.dir === 'UP' ? 0 : a.dir === 'RIGHT' ? 1 : a.dir === 'DOWN' ? 2 : 3;
 
-    totalBends += countBends(a.cells);
-    if (a.cells.length >= 4) longPipeCount += 1;
-    else if (a.cells.length === 3) mediumCurveCount += 1;
+    const bends = countBends(a.cells);
+    totalBends += bends;
+    if (bends >= 2) multiBendCount += 1;
+    if (bends >= 4) deepBendCount += 1;
+
+    if (a.cells.length >= 5) longPipeCount += 1;
+    else if (a.cells.length >= 3) mediumCurveCount += 1;
     else {
       shortKeyCount += 1;
       if (a.cells.length === 1) oneCellCount += 1;
@@ -503,12 +517,15 @@ function evaluatePuzzleComplexityFast(
     mediumCurveCount,
     shortKeyCount,
     oneCellCount,
+    multiBendCount,
+    deepBendCount,
     totalBends,
   };
 }
 
 function pickArchetypeAndLength(
   targets: LevelProgressionTargets,
+  rules: ShapeRules,
   placedCount: number,
   occupiedCount: number,
   longCount: number,
@@ -523,69 +540,73 @@ function pickArchetypeAndLength(
   const arrowsRemaining = Math.max(1, targetArrows - placedCount);
   const avgNeeded = targetCellsLeft / arrowsRemaining;
 
-  const maxLongLen = Math.min(10, Math.max(5, Math.floor(gridSize * 0.55) + 2));
-  const maxLongTarget = Math.max(2, Math.floor(targetArrows * 0.34));
+  const maxLongLen = Math.min(16, Math.max(6, Math.floor(gridSize * 0.72) + 2));
+  const maxLongTarget = Math.max(3, Math.floor(targetArrows * 0.48));
   const fillRatioNow = occupiedCount / totalCells;
 
-  // Anchor early phase with long winding snakes + interlocking C/S-curves
-  if (fillRatioNow < 0.42 && cellsLeft >= 4) {
+  const pickComplexLong = (): { archetype: ArrowArchetype; desiredLen: number } => {
     const r = rand();
-    if (longCount < maxLongTarget && (r < 0.46 + complexityFactor * 0.14 || longCount === 0)) {
-      const len = Math.min(
-        cellsLeft,
-        4 + Math.floor(rand() * Math.max(1, maxLongLen - 3))
-      );
-      return { archetype: 'winding_pipe', desiredLen: len };
-    }
-    const curveType: ArrowArchetype = rand() < 0.5 ? 'c_clamp' : 's_curve';
-    return { archetype: curveType, desiredLen: Math.min(cellsLeft, 3 + (rand() < 0.25 ? 1 : 0)) };
-  }
-
-  // Budget-aware scheduling so arrow count AND snake variety balance cleanly
-  if (avgNeeded >= 3.65 && cellsLeft >= 4 && longCount < maxLongTarget) {
     const len = Math.min(
       cellsLeft,
-      4 + Math.floor(rand() * Math.max(1, maxLongLen - 3))
+      5 + Math.floor(rand() * Math.max(2, maxLongLen - 4))
     );
+    if (rules.allowUTurns && r < 0.3) {
+      return { archetype: 'spiral_coil', desiredLen: len };
+    }
+    if (r < 0.62) {
+      return { archetype: 'zigzag_snake', desiredLen: len };
+    }
     return { archetype: 'winding_pipe', desiredLen: len };
+  };
+
+  const pickMediumBend = (): { archetype: ArrowArchetype; desiredLen: number } => {
+    const r = rand();
+    const len = Math.min(cellsLeft, 3 + Math.floor(rand() * (rules.allowUTurns ? 4 : 2)));
+    if (rules.allowUTurns && r < 0.48) {
+      return { archetype: 'u_hook', desiredLen: Math.max(3, len) };
+    }
+    return { archetype: 's_curve', desiredLen: Math.max(3, len) };
+  };
+
+  // Early phase: anchor the board with sweeping multi-bend coils, zigzags, and U-hooks
+  if (fillRatioNow < 0.5 && cellsLeft >= 5) {
+    if (longCount < maxLongTarget && (rand() < 0.62 + complexityFactor * 0.16 || longCount === 0)) {
+      return pickComplexLong();
+    }
+    return pickMediumBend();
   }
 
-  // Mid phase: dense weave of snakes, C/S-hooks, and 2-cell keys
-  if (fillRatioNow < 0.84 && cellsLeft >= 2) {
-    if (shortCount < Math.floor(placedCount * 0.25) && rand() < 0.52) {
+  // Budget-aware scheduling so arrow count AND rich bend diversity both thrive
+  if (avgNeeded >= 3.85 && cellsLeft >= 5 && longCount < maxLongTarget) {
+    return pickComplexLong();
+  }
+
+  // Mid phase: dense weave of snakes, zigzags, U-hooks, S-curves, and tactical 2-cell keys
+  if (fillRatioNow < 0.85 && cellsLeft >= 2) {
+    if (shortCount < Math.floor(placedCount * 0.2) && rand() < 0.48) {
       return { archetype: 'short_key', desiredLen: 2 };
     }
-    if (avgNeeded <= 2.3) {
+    if (avgNeeded <= 2.25) {
       return { archetype: 'short_key', desiredLen: 2 };
     }
     const r = rand();
     if (
       longCount < maxLongTarget &&
-      r < 0.28 + complexityFactor * 0.14 &&
-      cellsLeft >= 4 &&
-      avgNeeded >= 2.95
+      r < 0.36 + complexityFactor * 0.16 &&
+      cellsLeft >= 5 &&
+      avgNeeded >= 3.05
     ) {
-      const len = Math.min(
-        cellsLeft,
-        4 + Math.floor(rand() * Math.max(1, maxLongLen - 4))
-      );
-      return { archetype: 'winding_pipe', desiredLen: len };
+      return pickComplexLong();
     }
-    if ((r < 0.68 || mediumCount < Math.floor(placedCount * 0.3)) && cellsLeft >= 3) {
-      return {
-        archetype: rand() < 0.5 ? 'c_clamp' : 's_curve',
-        desiredLen: Math.min(cellsLeft, 3),
-      };
+    if ((r < 0.78 || mediumCount < Math.floor(placedCount * 0.32)) && cellsLeft >= 3) {
+      return pickMediumBend();
     }
     return { archetype: 'short_key', desiredLen: 2 };
   }
 
-  // Late phase: tightly pack remaining cavities with 2-cell keys and 3-cell hooks
-  if (cellsLeft >= 3 && avgNeeded >= 2.6 && rand() < 0.44) {
-    return {
-      archetype: rand() < 0.5 ? 'c_clamp' : 's_curve',
-      desiredLen: 3,
-    };
+  // Late phase: tightly pack remaining winding cavities with 3-5 cell hooks or 2-cell keys
+  if (cellsLeft >= 3 && avgNeeded >= 2.55 && rand() < 0.52) {
+    return pickMediumBend();
   }
   return {
     archetype: 'short_key',
@@ -793,6 +814,7 @@ function buildBoardAttempt(
     const fillRatioNow = occupiedCount / totalCells;
     const { archetype, desiredLen } = pickArchetypeAndLength(
       targets,
+      rules,
       placed.length,
       occupiedCount,
       longCount,
@@ -984,39 +1006,68 @@ function buildBoardAttempt(
           if (!rules.allowUTurns && isUTurn) continue;
         }
 
-        // Hug adjacent occupied cells and walls tightly like real Arrow Escape circuits
+        // Hug adjacent occupied cells and walls tightly + lookahead 1 step so long coils/zigzags don't dead-end early
         let adjOccupied = 0;
+        let onwardOpen = 0;
         for (let ad = 0; ad < 4; ad++) {
           const ar = nr + DIR_DR[ad];
           const ac = nc + DIR_DC[ad];
           if (ar < 0 || ar >= gridSize || ac < 0 || ac >= gridSize) {
-            adjOccupied += 0.6;
-          } else if (occ[ar * gridSize + ac] !== -1 || localUsed.has(ar * gridSize + ac)) {
-            adjOccupied += 1;
+            adjOccupied += 0.65;
+          } else {
+            const aIdx = ar * gridSize + ac;
+            if (occ[aIdx] !== -1 || localUsed.has(aIdx)) {
+              adjOccupied += 1;
+            } else if (minRayOrder[aIdx] > M + 1e-4) {
+              onwardOpen += 1;
+            }
           }
         }
 
+        const preferTurnFirst = reversedCells.length <= 3;
         let shapeWeight = 1.0;
-        if (archetype === 'c_clamp') {
+        if (archetype === 'spiral_coil') {
           shapeWeight = !isStraight
-            ? bendCount === 0 || isUTurn
-              ? 3.6
-              : 0.7
-            : 0.85;
+            ? lastTurnSign === 0 || turnSign === lastTurnSign
+              ? 4.6
+              : 0.75
+            : preferTurnFirst
+              ? 0.7
+              : 1.05;
+        } else if (archetype === 'zigzag_snake') {
+          shapeWeight = !isStraight
+            ? lastTurnSign === 0 || turnSign !== lastTurnSign
+              ? 4.8
+              : 0.85
+            : 0.72;
+        } else if (archetype === 'u_hook') {
+          shapeWeight = !isStraight
+            ? bendCount < 2 && (lastTurnSign === 0 || turnSign === lastTurnSign)
+              ? 4.4
+              : 0.9
+            : bendCount >= 2
+              ? 2.2
+              : 0.85;
         } else if (archetype === 's_curve') {
           shapeWeight = !isStraight
             ? bendCount === 0 || !isUTurn
-              ? 3.4
-              : 0.65
-            : 0.9;
+              ? 3.8
+              : 0.7
+            : 0.95;
         } else if (archetype === 'winding_pipe') {
-          shapeWeight = isStraight ? 1.15 : 2.6;
+          shapeWeight = isStraight ? 0.95 : 3.4;
         } else {
-          shapeWeight = isStraight ? 1.25 : 1.75;
+          shapeWeight = isStraight ? 1.15 : 2.1;
         }
 
+        const continuationBonus =
+          reversedCells.length + 1 < desiredLen
+            ? onwardOpen > 0
+              ? 2.4
+              : -0.75
+            : 0;
         const hotspotBonus = unblockedHotspot[nIdx] * (4.2 + complexityFactor * 3.5);
-        const hugBonus = adjOccupied * (1.2 + complexityFactor * 0.6);
+        const hugBonus = adjOccupied * (1.25 + complexityFactor * 0.65);
 
         neighbors.push({
           r: nr,
@@ -1026,7 +1077,7 @@ function buildBoardAttempt(
           isBend: !isStraight,
           turnSign,
           minOrd: cellMinOrd,
-          weight: shapeWeight + hotspotBonus + hugBonus,
+          weight: Math.max(0.15, shapeWeight + continuationBonus + hotspotBonus + hugBonus),
         });
       }
 
@@ -1198,18 +1249,20 @@ function scoreAttempt(
   const densityScore =
     attempt.occupiedCount * 9 -
     occDeficit * 32 -
-    arrowDeficit * 28 -
-    arrowDelta * 12 -
+    arrowDeficit * 26 -
+    arrowDelta * 10 -
     oneCellPenalty +
-    attempt.longPipeCount * (10 + complexityFactor * 8) +
-    attempt.mediumCurveCount * 6 +
-    attempt.totalBends * (3.0 + complexityFactor * 4.5) +
+    attempt.longPipeCount * (14 + complexityFactor * 10) +
+    attempt.mediumCurveCount * 7 +
+    attempt.multiBendCount * (9 + complexityFactor * 8) +
+    attempt.deepBendCount * (15 + complexityFactor * 12) +
+    attempt.totalBends * (4.5 + complexityFactor * 5.5) +
     diversityBonus;
 
   const excessFree = Math.max(0, attempt.initialFreeCount - idealInitFree);
   const interlockScore =
-    attempt.waveCount * (28 + complexityFactor * 34) -
-    excessFree * (26 + complexityFactor * 28);
+    attempt.waveCount * (32 + complexityFactor * 36) -
+    excessFree * (28 + complexityFactor * 30);
 
   return densityScore + interlockScore;
 }

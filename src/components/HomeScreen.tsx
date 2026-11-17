@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { Gift, Lightbulb, Play, Settings } from 'lucide-react';
+import { Gift, Lightbulb, Play, Settings, Video } from 'lucide-react';
 import type { PlayerProgress } from '../types/game';
 
 interface HomeScreenProps {
@@ -8,6 +8,7 @@ interface HomeScreenProps {
   onPlay: () => void;
   onOpenDaily: () => void;
   onOpenSettings: () => void;
+  onWatchFreeHintAd: () => void;
 }
 
 /**
@@ -21,6 +22,7 @@ export function HomeScreen({
   onPlay,
   onOpenDaily,
   onOpenSettings,
+  onWatchFreeHintAd,
 }: HomeScreenProps) {
   const isReturningPlayer = progress.currentLevel > 1;
 
@@ -47,12 +49,25 @@ export function HomeScreen({
           <Settings className="h-5 w-5 stroke-[2.2]" />
         </button>
 
-        <div className="flex items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-slate-800 shadow-[0_6px_18px_-4px_rgba(15,23,42,0.06)] ring-1 ring-slate-200/80">
+        <button
+          type="button"
+          onClick={onWatchFreeHintAd}
+          aria-label="Watch ad for 1 free hint"
+          className={`flex items-center gap-1.5 rounded-full py-1.5 pr-2 pl-3 text-slate-800 shadow-[0_6px_18px_-4px_rgba(15,23,42,0.06)] ring-1 transition-transform active:scale-95 ${
+            progress.hints === 0
+              ? 'bg-emerald-50 ring-emerald-300'
+              : 'bg-white ring-slate-200/80'
+          }`}
+        >
           <Lightbulb className="h-4 w-4 text-[#2589FF]" aria-hidden="true" />
           <span className="font-mono-tabular text-sm font-bold">
             {progress.hints}
           </span>
-        </div>
+          <span className="flex items-center gap-0.5 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-extrabold text-white">
+            <Video className="h-2.5 w-2.5 stroke-[2.5]" aria-hidden="true" />
+            <span>+1</span>
+          </span>
+        </button>
       </header>
 
       {/* Hero / Brand Section */}

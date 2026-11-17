@@ -2,10 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { AnimatePresence, motion } from 'motion/react';
+import { AdOverlayModal } from './components/AdOverlayModal';
 import { GameplayScreen } from './components/GameplayScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { DailyBonusModal, SettingsModal } from './components/Modals';
-import type { GameSettings, PlayerProgress, ScreenView } from './types/game';
+import type {
+  AdPlacement,
+  GameSettings,
+  PlayerProgress,
+  ScreenView,
+} from './types/game';
 import { feedback } from './utils/soundAndHaptics';
 
 const PROGRESS_STORAGE_KEY = 'arrow_escape_progress_v1';
@@ -86,6 +92,10 @@ export default function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dailyOpen, setDailyOpen] = useState(false);
+  const [adState, setAdState] = useState<{
+    placement: AdPlacement;
+    onRewarded: () => void;
+  } | null>(null);
 
   const canClaimDaily = progress.lastDailyClaimDate !== getTodayKey();
 
@@ -139,6 +149,24 @@ export default function App() {
     return true;
   }, [progress.hints]);
 
+  const handleGrantHint = useCallback((amount = 1) => {
+    feedback.unlock();
+    feedback.playReward();
+    setProgress((prev) => ({
+      ...prev,
+      hints: prev.hints + amount,
+    }));
+  }, []);
+
+  const handleRequestAd = useCallback(
+    (placement: AdPlacement, onRewarded: () => void) => {
+      feedback.unlock();
+      feedback.playTap();
+      setAdState({ placement, onRewarded });
+    },
+    []
+  );
+
   const handleClaimDaily = useCallback((hintsEarned: number) => {
     const today = getTodayKey();
     feedback.unlock();
@@ -188,6 +216,9 @@ export default function App() {
                   feedback.playTap();
                   setSettingsOpen(true);
                 }}
+                onWatchFreeHintAd={() =>
+                  handleRequestAd('rewarded_hint', () => handleGrantHint(1))
+                }
               />
             </motion.div>
           )}
@@ -207,6 +238,8 @@ export default function App() {
                 onBackHome={() => navigateTo('home')}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onConsumeHint={handleConsumeHint}
+                onGrantHint={handleGrantHint}
+                onRequestAd={handleRequestAd}
                 onLevelComplete={handleLevelComplete}
               />
             </motion.div>
@@ -230,6 +263,20 @@ export default function App() {
           streak={progress.dailyStreak}
           onClaim={handleClaimDaily}
           onClose={() => setDailyOpen(false)}
+        />
+
+        <AdOverlayModal
+          visible={adState !== null}
+          placement={adState?.placement ?? null}
+          onComplete={() => {
+            const callback = adState?.onRewarded;
+            setAdState(null);
+            callback?.();
+          }}
+          onSkipOrClose={() => {
+            feedback.playTap();
+            setAdState(null);
+          }}
         />
       </div>
     </main>
