@@ -3,7 +3,7 @@ import type { Direction, GridPoint } from '../types/game';
 export const BOARD_VIEWBOX = 360;
 export const BOARD_PAD = 16;
 const BACK_EXT_LEN = 16;
-const EXIT_EXT_LEN = 430;
+const EXIT_EXT_LEN = 640;
 
 interface Point2D {
   x: number;
@@ -20,6 +20,8 @@ export interface ArrowPolylineGeometry {
   bodyLen: number;
   tipTrim: number;
   restD: string;
+  restPtsX: number[];
+  restPtsY: number[];
   restHeadD: string;
   restHead: { x: number; y: number; angle: number };
 }
@@ -127,11 +129,15 @@ export function buildArrowGeometry(
       bodyLen,
       tipTrim,
       restD: '',
+      restPtsX: [],
+      restPtsY: [],
       restHeadD: '',
       restHead: { x: pHead.x, y: pHead.y, angle: 0 },
     };
     const restSlice = sliceArrowGeometry(baseGeometry, 0);
     baseGeometry.restD = restSlice.d;
+    baseGeometry.restPtsX = restSlice.ptsX;
+    baseGeometry.restPtsY = restSlice.ptsY;
     baseGeometry.restHead = {
       x: restSlice.headX,
       y: restSlice.headY,
@@ -240,12 +246,16 @@ export function buildArrowGeometry(
     bodyLen,
     tipTrim,
     restD: '',
+    restPtsX: [],
+    restPtsY: [],
     restHeadD: '',
     restHead: { x: head.x, y: head.y, angle: 0 },
   };
 
   const restSlice = sliceArrowGeometry(baseGeometry, 0);
   baseGeometry.restD = restSlice.d;
+  baseGeometry.restPtsX = restSlice.ptsX;
+  baseGeometry.restPtsY = restSlice.ptsY;
   baseGeometry.restHead = {
     x: restSlice.headX,
     y: restSlice.headY,
@@ -303,7 +313,14 @@ function samplePointAt(
 export function sliceArrowGeometry(
   geom: ArrowPolylineGeometry,
   offsetPx: number
-): { d: string; headX: number; headY: number; headAngle: number } {
+): {
+  d: string;
+  ptsX: number[];
+  ptsY: number[];
+  headX: number;
+  headY: number;
+  headAngle: number;
+} {
   const startDist = Math.max(0, geom.backLen + offsetPx);
   const headDist = Math.min(geom.totalLen, geom.backLen + offsetPx + geom.bodyLen);
   const stemEndDist = Math.max(startDist + 0.5, headDist - geom.tipTrim);
@@ -312,20 +329,28 @@ export function sliceArrowGeometry(
   const endPt = samplePointAt(geom, stemEndDist);
   const headPt = samplePointAt(geom, headDist);
 
+  const outX: number[] = [startPt.x];
+  const outY: number[] = [startPt.y];
   let d = `M ${startPt.x.toFixed(2)} ${startPt.y.toFixed(2)}`;
 
   const { pts, cumLen } = geom;
   for (let i = 1; i < pts.length - 1; i++) {
     const len = cumLen[i];
     if (len > startDist && len < stemEndDist) {
+      outX.push(pts[i].x);
+      outY.push(pts[i].y);
       d += ` L ${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)}`;
     }
   }
 
+  outX.push(endPt.x);
+  outY.push(endPt.y);
   d += ` L ${endPt.x.toFixed(2)} ${endPt.y.toFixed(2)}`;
 
   return {
     d,
+    ptsX: outX,
+    ptsY: outY,
     headX: headPt.x,
     headY: headPt.y,
     headAngle: headPt.angle,

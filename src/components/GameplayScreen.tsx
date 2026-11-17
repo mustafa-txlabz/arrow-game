@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   Heart,
   Lightbulb,
+  Minimize2,
   Navigation2,
   PartyPopper,
   RotateCcw,
@@ -39,11 +40,10 @@ const MAX_LIVES = 3;
 const MIN_ZOOM_SCALE = 1;
 
 /**
- * Clean minimalist light-mode Gameplay Screen UI:
- * - Dotted grid matrix inside a clean rounded white card with pinch-to-zoom & panning
- * - Bent, L-shaped, and meandering custom SVG path arrows flowing smoothly along their routing
+ * Full-bleed crisp SVG viewBox-camera Gameplay Screen (Web & Capacitor):
+ * - Direct SVG viewBox camera zoom & pan (re-tessellated at native DPI with zero bitmap blur)
+ * - Edge-to-edge open canvas playfield behind floating bottom Hint & 1.0x Reset controls
  * - Full-distance collision slide + elastic rebound on blocked taps
- * - Confetti burst and celebratory board shake when all arrows are cleared
  */
 export function GameplayScreen({
   level,
@@ -66,6 +66,7 @@ export function GameplayScreen({
   const [confettiKey, setConfettiKey] = useState<number>(0);
   const [heartsShakeKey, setHeartsShakeKey] = useState<number>(0);
   const [statusModal, setStatusModal] = useState<'none' | 'cleared' | 'failed'>('none');
+  const [isZoomed, setIsZoomed] = useState<boolean>(false);
 
   const timersRef = useRef<number[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
@@ -74,79 +75,194 @@ export function GameplayScreen({
   const occGridRef = useRef<Uint8Array>(new Uint8Array(0));
   const escapingIdsRef = useRef<Set<string>>(new Set());
 
-  // Pinch-to-Zoom & Panning state (stored in refs for 60fps DOM transform updates)
+  // Direct SVG viewBox camera refs (zero CSS bitmap scaling)
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const zoomLayerRef = useRef<HTMLDivElement | null>(null);
-  const transformRef = useRef<{ scale: number; tx: number; ty: number }>({
-    scale: 1,
-    tx: 0,
-    ty: 0,
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const layoutRef = useRef<{
+    w: number;
+    h: number;
+    usableH: number;
+    baseScale: number;
+    baseOx: number;
+    baseOy: number;
+  }>({
+    w: 360,
+    h: 520,
+    usableH: 430,
+    baseScale: 0.9,
+    baseOx: 18,
+    baseOy: 18,
   });
+  const cameraRef = useRef<{ zoom: number; tx: number; ty: number }>({
+    zoom: 1,
+    tx: 18,
+    ty: 18,
+  });
+  const camAnimRafRef = useRef<number>(0);
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const gestureRef = useRef<{
     mode: 'none' | 'pan' | 'pinch';
     startDist: number;
-    startScale: number;
+    startZoom: number;
     startTx: number;
     startTy: number;
     startMidX: number;
     startMidY: number;
+    startFocusBx: number;
+    startFocusBy: number;
     moved: boolean;
   }>({
     mode: 'none',
     startDist: 0,
-    startScale: 1,
+    startZoom: 1,
     startTx: 0,
     startTy: 0,
     startMidX: 0,
     startMidY: 0,
+    startFocusBx: BOARD_VIEWBOX * 0.5,
+    startFocusBy: BOARD_VIEWBOX * 0.5,
     moved: false,
   });
   const suppressTapUntilRef = useRef<number>(0);
 
   const maxZoomScale = useMemo(
-    () => Math.min(7.2, Math.max(2.4, generated.gridSize * 0.23)),
+    () => Math.min(8.0, Math.max(2.6, generated.gridSize * 0.25)),
     [generated.gridSize]
   );
 
-  const clampTransform = useCallback(
-    (scale: number, tx: number, ty: number) => {
-      const el = viewportRef.current;
-      const w = el?.clientWidth || 360;
-      const h = el?.clientHeight || 360;
-      const clampedScale = Math.min(maxZoomScale, Math.max(MIN_ZOOM_SCALE, scale));
-      if (clampedScale <= MIN_ZOOM_SCALE) {
-        return { scale: MIN_ZOOM_SCALE, tx: 0, ty: 0 };
+  const clampCamera = useCallback(
+    (nextZoom: number, nextTx: number, nextTy: number) => {
+      const { w, h, usableH, baseScale, baseOx, baseOy } = layoutRef.current;
+      const z = Math.min(maxZoomScale, Math.max(MIN_ZOOM_SCALE, nextZoom));
+      if (z <= 1.0005) {
+        return { zoom: 1, tx: baseOx, ty: baseOy };
       }
-      const minTx = w * (1 - clampedScale);
-      const minTy = h * (1 - clampedScale);
+      const t = Math.min(1, (z - 1) / 0.25);
+      const scaledBoard = BOARD_VIEWBOX * baseScale * z;
+      const freeMinTx = Math.min(baseOx, w * 0.36 - scaledBoard);
+      const freeMaxTx = Math.max(baseOx, w * 0.64);
+      const freeMinTy = Math.min(baseOy, usableH * 0.36 - scaledBoard);
+      const freeMaxTy = Math.max(baseOy, h * 0.66);
+
+      const minTx = baseOx + (freeMinTx - baseOx) * t;
+      const maxTx = baseOx + (freeMaxTx - baseOx) * t;
+      const minTy = baseOy + (freeMinTy - baseOy) * t;
+      const maxTy = baseOy + (freeMaxTy - baseOy) * t;
+
       return {
-        scale: clampedScale,
-        tx: Math.min(0, Math.max(minTx, tx)),
-        ty: Math.min(0, Math.max(minTy, ty)),
+        zoom: z,
+        tx: Math.max(minTx, Math.min(maxTx, nextTx)),
+        ty: Math.max(minTy, Math.min(maxTy, nextTy)),
       };
     },
     [maxZoomScale]
   );
 
-  const applyZoomTransform = useCallback(
-    (next: { scale: number; tx: number; ty: number }) => {
-      transformRef.current = next;
-      if (zoomLayerRef.current) {
-        zoomLayerRef.current.style.transform = `translate3d(${next.tx.toFixed(
-          2
-        )}px, ${next.ty.toFixed(2)}px, 0) scale(${next.scale.toFixed(4)})`;
+  const applyCameraViewBox = useCallback(
+    (next: { zoom: number; tx: number; ty: number }) => {
+      cameraRef.current = next;
+      const { w, h, baseScale } = layoutRef.current;
+      const totalScale = Math.max(0.001, baseScale * next.zoom);
+      const vbX = -next.tx / totalScale;
+      const vbY = -next.ty / totalScale;
+      const vbW = w / totalScale;
+      const vbH = h / totalScale;
+      if (svgRef.current) {
+        svgRef.current.setAttribute(
+          'viewBox',
+          `${vbX.toFixed(3)} ${vbY.toFixed(3)} ${vbW.toFixed(3)} ${vbH.toFixed(3)}`
+        );
       }
+      const zoomedNow = next.zoom > 1.08;
+      setIsZoomed((prev) => (prev === zoomedNow ? prev : zoomedNow));
     },
     []
   );
 
-  const resetZoomTransform = useCallback(() => {
-    pointersRef.current.clear();
-    gestureRef.current.mode = 'none';
-    gestureRef.current.moved = false;
-    applyZoomTransform({ scale: 1, tx: 0, ty: 0 });
-  }, [applyZoomTransform]);
+  const animateCameraTo = useCallback(
+    (target: { zoom: number; tx: number; ty: number }, durationMs = 220) => {
+      cancelAnimationFrame(camAnimRafRef.current);
+      const start = { ...cameraRef.current };
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const raw = Math.min(1, (now - t0) / durationMs);
+        const eased = 1 - Math.pow(1 - raw, 3);
+        applyCameraViewBox({
+          zoom: start.zoom + (target.zoom - start.zoom) * eased,
+          tx: start.tx + (target.tx - start.tx) * eased,
+          ty: start.ty + (target.ty - start.ty) * eased,
+        });
+        if (raw < 1) {
+          camAnimRafRef.current = requestAnimationFrame(tick);
+        }
+      };
+      camAnimRafRef.current = requestAnimationFrame(tick);
+    },
+    [applyCameraViewBox]
+  );
+
+  const resetZoomTransform = useCallback(
+    (animated = false) => {
+      cancelAnimationFrame(camAnimRafRef.current);
+      pointersRef.current.clear();
+      gestureRef.current.mode = 'none';
+      gestureRef.current.moved = false;
+      const { baseOx, baseOy } = layoutRef.current;
+      if (animated) {
+        animateCameraTo({ zoom: 1, tx: baseOx, ty: baseOy }, 220);
+      } else {
+        applyCameraViewBox({ zoom: 1, tx: baseOx, ty: baseOy });
+      }
+    },
+    [animateCameraTo, applyCameraViewBox]
+  );
+
+  // Sync playfield layout dimensions cleanly on mount & resize
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const updateLayout = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      const usableH = Math.max(180, h - 84);
+      const fit = Math.max(180, Math.min(w - 20, usableH - 12));
+      const nextBaseScale = fit / BOARD_VIEWBOX;
+      const nextOx = (w - fit) * 0.5;
+      const nextOy = Math.max(8, (usableH - fit) * 0.5);
+
+      const prevOx = layoutRef.current.baseOx;
+      const prevOy = layoutRef.current.baseOy;
+      layoutRef.current = {
+        w,
+        h,
+        usableH,
+        baseScale: nextBaseScale,
+        baseOx: nextOx,
+        baseOy: nextOy,
+      };
+
+      const curr = cameraRef.current;
+      if (curr.zoom <= 1.005) {
+        applyCameraViewBox({ zoom: 1, tx: nextOx, ty: nextOy });
+      } else {
+        applyCameraViewBox({
+          zoom: curr.zoom,
+          tx: curr.tx + (nextOx - prevOx),
+          ty: curr.ty + (nextOy - prevOy),
+        });
+      }
+    };
+
+    updateLayout();
+    const ro = new ResizeObserver(updateLayout);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(camAnimRafRef.current);
+    };
+  }, [applyCameraViewBox]);
 
   const scheduleTimeout = (fn: () => void, ms: number) => {
     const id = window.setTimeout(fn, ms);
@@ -172,11 +288,11 @@ export function GameplayScreen({
     setCelebrating(false);
     setHeartsShakeKey(0);
     setStatusModal('none');
-    resetZoomTransform();
+    resetZoomTransform(false);
     return clearScheduledTimeouts;
   }, [generated, resetZoomTransform]);
 
-  // Native non-passive wheel zoom for desktop convenience (strictly capped to [1, maxZoomScale])
+  // Native non-passive wheel zoom for desktop convenience (crisp SVG viewBox update)
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
@@ -184,25 +300,30 @@ export function GameplayScreen({
     const handleWheel = (e: WheelEvent) => {
       if (statusModal !== 'none') return;
       e.preventDefault();
+      cancelAnimationFrame(camAnimRafRef.current);
       const rect = el.getBoundingClientRect();
       const fx = e.clientX - rect.left;
       const fy = e.clientY - rect.top;
-      const curr = transformRef.current;
+      const curr = cameraRef.current;
+      const { baseScale } = layoutRef.current;
+      const curTotalS = baseScale * curr.zoom;
+      const bx = (fx - curr.tx) / curTotalS;
+      const by = (fy - curr.ty) / curTotalS;
+
       const factor = Math.exp(-e.deltaY * 0.0022);
-      const nextScale = Math.min(
+      const nextZoom = Math.min(
         maxZoomScale,
-        Math.max(MIN_ZOOM_SCALE, curr.scale * factor)
+        Math.max(MIN_ZOOM_SCALE, curr.zoom * factor)
       );
-      const bx = (fx - curr.tx) / curr.scale;
-      const by = (fy - curr.ty) / curr.scale;
-      const rawTx = fx - bx * nextScale;
-      const rawTy = fy - by * nextScale;
-      applyZoomTransform(clampTransform(nextScale, rawTx, rawTy));
+      const nextTotalS = baseScale * nextZoom;
+      const rawTx = fx - bx * nextTotalS;
+      const rawTy = fy - by * nextTotalS;
+      applyCameraViewBox(clampCamera(nextZoom, rawTx, rawTy));
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
-  }, [applyZoomTransform, clampTransform, maxZoomScale, statusModal]);
+  }, [applyCameraViewBox, clampCamera, maxZoomScale, statusModal]);
 
   const activeArrows = useMemo(
     () => arrows.filter((a) => a.state !== 'escaping'),
@@ -231,7 +352,7 @@ export function GameplayScreen({
     setImpactFlash(null);
     setCelebrating(false);
     setStatusModal('none');
-    resetZoomTransform();
+    resetZoomTransform(false);
   };
 
   const handleEscapeComplete = useCallback(
@@ -297,7 +418,6 @@ export function GameplayScreen({
     );
 
     if (clear) {
-      // Scenario A: Path is clear -> release occupancy synchronously and flow off the board edge
       escapingIdsRef.current.add(arrow.id);
       const occ = occGridRef.current;
       for (let i = 0; i < arrow.cells.length; i++) {
@@ -314,7 +434,6 @@ export function GameplayScreen({
       return;
     }
 
-    // Scenario B: Blocked -> slide across open gap, hit blocker, and rebound elastically
     const isFirstPenalty = !arrow.isBlocked;
     const singleHeadOffset =
       arrow.cells.length === 1 ? Math.min(cellStep * 0.22, 14) : 0;
@@ -350,7 +469,6 @@ export function GameplayScreen({
       }
     }
 
-    // Deduct 1 heart ONLY on the first blocked tap of this arrow
     if (isFirstPenalty) {
       const nextLives = Math.max(0, livesRef.current - 1);
       livesRef.current = nextLives;
@@ -375,19 +493,22 @@ export function GameplayScreen({
     if (statusModal !== 'none') return;
     const el = viewportRef.current;
     if (!el) return;
+    cancelAnimationFrame(camAnimRafRef.current);
 
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pointersRef.current.size === 1) {
-      const curr = transformRef.current;
+      const curr = cameraRef.current;
       gestureRef.current = {
         mode: 'pan',
         startDist: 0,
-        startScale: curr.scale,
+        startZoom: curr.zoom,
         startTx: curr.tx,
         startTy: curr.ty,
         startMidX: e.clientX,
         startMidY: e.clientY,
+        startFocusBx: BOARD_VIEWBOX * 0.5,
+        startFocusBy: BOARD_VIEWBOX * 0.5,
         moved: false,
       };
     } else if (pointersRef.current.size >= 2) {
@@ -396,16 +517,19 @@ export function GameplayScreen({
       const mx = (pts[0].x + pts[1].x) * 0.5 - rect.left;
       const my = (pts[0].y + pts[1].y) * 0.5 - rect.top;
       const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-      const curr = transformRef.current;
+      const curr = cameraRef.current;
+      const totalS = layoutRef.current.baseScale * curr.zoom;
 
       gestureRef.current = {
         mode: 'pinch',
         startDist: Math.max(10, dist),
-        startScale: curr.scale,
+        startZoom: curr.zoom,
         startTx: curr.tx,
         startTy: curr.ty,
         startMidX: mx,
         startMidY: my,
+        startFocusBx: (mx - curr.tx) / totalS,
+        startFocusBy: (my - curr.ty) / totalS,
         moved: true,
       };
       suppressTapUntilRef.current = performance.now() + 120;
@@ -427,16 +551,15 @@ export function GameplayScreen({
       const my = (pts[0].y + pts[1].y) * 0.5 - rect.top;
       const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
 
-      const nextScale = Math.min(
+      const nextZoom = Math.min(
         maxZoomScale,
-        Math.max(MIN_ZOOM_SCALE, g.startScale * (dist / g.startDist))
+        Math.max(MIN_ZOOM_SCALE, g.startZoom * (dist / g.startDist))
       );
-      const bx = (g.startMidX - g.startTx) / g.startScale;
-      const by = (g.startMidY - g.startTy) / g.startScale;
-      const rawTx = mx - bx * nextScale;
-      const rawTy = my - by * nextScale;
+      const nextTotalS = layoutRef.current.baseScale * nextZoom;
+      const rawTx = mx - g.startFocusBx * nextTotalS;
+      const rawTy = my - g.startFocusBy * nextTotalS;
 
-      applyZoomTransform(clampTransform(nextScale, rawTx, rawTy));
+      applyCameraViewBox(clampCamera(nextZoom, rawTx, rawTy));
       suppressTapUntilRef.current = performance.now() + 120;
       return;
     }
@@ -449,9 +572,9 @@ export function GameplayScreen({
         g.moved = true;
       }
 
-      if (g.moved && transformRef.current.scale > MIN_ZOOM_SCALE) {
-        applyZoomTransform(
-          clampTransform(g.startScale, g.startTx + dx, g.startTy + dy)
+      if (g.moved && cameraRef.current.zoom > MIN_ZOOM_SCALE) {
+        applyCameraViewBox(
+          clampCamera(g.startZoom, g.startTx + dx, g.startTy + dy)
         );
         suppressTapUntilRef.current = performance.now() + 70;
       }
@@ -463,20 +586,26 @@ export function GameplayScreen({
 
     if (pointersRef.current.size === 1) {
       const remaining = Array.from(pointersRef.current.values())[0];
-      const curr = transformRef.current;
+      const curr = cameraRef.current;
       gestureRef.current = {
         mode: 'pan',
         startDist: 0,
-        startScale: curr.scale,
+        startZoom: curr.zoom,
         startTx: curr.tx,
         startTy: curr.ty,
         startMidX: remaining.x,
         startMidY: remaining.y,
+        startFocusBx: BOARD_VIEWBOX * 0.5,
+        startFocusBy: BOARD_VIEWBOX * 0.5,
         moved: true,
       };
       suppressTapUntilRef.current = performance.now() + 70;
     } else if (pointersRef.current.size === 0) {
       gestureRef.current.mode = 'none';
+      if (cameraRef.current.zoom < 1.05 && cameraRef.current.zoom > 1) {
+        const { baseOx, baseOy } = layoutRef.current;
+        animateCameraTo({ zoom: 1, tx: baseOx, ty: baseOy }, 150);
+      }
     }
   };
 
@@ -495,6 +624,26 @@ export function GameplayScreen({
     if (onConsumeHint()) {
       feedback.playHint();
       setHintTargetId(candidate.id);
+
+      const curr = cameraRef.current;
+      if (curr.zoom > 1.15) {
+        const headCenter = cellCenter(
+          candidate.cells[candidate.cells.length - 1],
+          cellStep
+        );
+        const { w, usableH, baseScale } = layoutRef.current;
+        const totalS = baseScale * curr.zoom;
+        const sx = curr.tx + headCenter.x * totalS;
+        const sy = curr.ty + headCenter.y * totalS;
+        if (sx < 44 || sx > w - 44 || sy < 44 || sy > usableH - 44) {
+          const clamped = clampCamera(
+            curr.zoom,
+            w * 0.5 - headCenter.x * totalS,
+            usableH * 0.5 - headCenter.y * totalS
+          );
+          animateCameraTo(clamped, 280);
+        }
+      }
     }
   };
 
@@ -508,200 +657,204 @@ export function GameplayScreen({
           : 'bg-rose-50 text-rose-700';
 
   return (
-    <div className="safe-top safe-bottom relative flex h-full w-full flex-col justify-between overflow-hidden bg-[#F5F8FC] px-4 py-3 text-slate-900">
-      {/* Top Header Bar */}
-      <header className="flex items-center justify-between">
-        <button
-          type="button"
-          onClick={() => {
-            feedback.playTap();
-            onBackHome();
-          }}
-          aria-label="Back to home"
-          className="flex h-11 w-11 items-center justify-center rounded-full text-[#2589FF] transition-transform hover:bg-blue-50 active:scale-90"
-        >
-          <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
-        </button>
+    <div className="safe-top relative flex h-full w-full flex-col overflow-hidden bg-[#F5F8FC] text-slate-900">
+      {/* Compact Top HUD Strip */}
+      <div className="z-10 border-b border-slate-200/80 bg-[#F5F8FC] px-4 pt-1.5 pb-2.5">
+        <header className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => {
+              feedback.playTap();
+              onBackHome();
+            }}
+            aria-label="Back to home"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-[#2589FF] transition-transform hover:bg-blue-50 active:scale-90"
+          >
+            <ChevronLeft className="h-6 w-6 stroke-[2.5]" />
+          </button>
 
-        <h1 className="font-display text-base font-bold tracking-tight text-slate-900">
-          Level {level}
-        </h1>
+          <h1 className="font-display text-base font-bold tracking-tight text-slate-900">
+            Level {level}
+          </h1>
 
-        <button
-          type="button"
-          onClick={() => {
-            feedback.playTap();
-            onOpenSettings();
-          }}
-          aria-label="Open settings"
-          className="flex h-11 w-11 items-center justify-center rounded-full text-[#2589FF] transition-transform hover:bg-blue-50 active:scale-90"
-        >
-          <Settings className="h-5 w-5 stroke-[2.2]" />
-        </button>
-      </header>
+          <button
+            type="button"
+            onClick={() => {
+              feedback.playTap();
+              onOpenSettings();
+            }}
+            aria-label="Open settings"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-[#2589FF] transition-transform hover:bg-blue-50 active:scale-90"
+          >
+            <Settings className="h-5 w-5 stroke-[2.2]" />
+          </button>
+        </header>
 
-      {/* Sub-HUD / Status Bar */}
-      <div className="mt-0.5 flex items-center justify-between px-1">
-        {/* Left: Remaining arrows badge */}
-        <div className="flex h-7 items-center gap-1.5 rounded-full bg-[#EAF0F8] px-3 text-slate-800">
-          <Navigation2
-            className="h-3 w-3 rotate-45 fill-slate-700 text-slate-700"
-            aria-hidden="true"
-          />
-          <span className="font-mono-tabular text-xs font-bold">
-            {activeArrows.length}
-          </span>
+        <div className="mt-0.5 flex items-center justify-between px-1">
+          <div className="flex h-7 items-center gap-1.5 rounded-full bg-[#EAF0F8] px-3 text-slate-800">
+            <Navigation2
+              className="h-3 w-3 rotate-45 fill-slate-700 text-slate-700"
+              aria-hidden="true"
+            />
+            <span className="font-mono-tabular text-xs font-bold">
+              {activeArrows.length}
+            </span>
+          </div>
+
+          <motion.div
+            key={heartsShakeKey}
+            animate={heartsShakeKey > 0 ? { x: [0, -5, 5, -3, 3, 0] } : { x: 0 }}
+            transition={{ duration: 0.28, ease: 'easeOut' }}
+            className="flex items-center gap-1.5"
+            aria-label={`${lives} of ${MAX_LIVES} lives remaining`}
+          >
+            {Array.from({ length: MAX_LIVES }).map((_, idx) => {
+              const active = idx < lives;
+              return (
+                <Heart
+                  key={idx}
+                  className={`h-5 w-5 transition-all duration-200 ${
+                    active
+                      ? 'scale-100 fill-[#EF4444] text-[#EF4444]'
+                      : 'scale-90 fill-slate-200 text-slate-300'
+                  }`}
+                  aria-hidden="true"
+                />
+              );
+            })}
+          </motion.div>
+
+          <div
+            className={`flex h-7 items-center rounded-full px-3 text-xs font-semibold ${difficultyTone}`}
+          >
+            {generated.difficulty}
+          </div>
         </div>
+      </div>
 
-        {/* Center: 3 Hearts */}
-        <motion.div
-          key={heartsShakeKey}
-          animate={heartsShakeKey > 0 ? { x: [0, -5, 5, -3, 3, 0] } : { x: 0 }}
-          transition={{ duration: 0.28, ease: 'easeOut' }}
-          className="flex items-center gap-1.5"
-          aria-label={`${lives} of ${MAX_LIVES} lives remaining`}
+      {/* Full-Bleed Edge-to-Edge Vector Playfield (Direct SVG viewBox camera zoom) */}
+      <motion.div
+        ref={viewportRef}
+        onPointerDown={handleBoardPointerDown}
+        onPointerMove={handleBoardPointerMove}
+        onPointerUp={handleBoardPointerEnd}
+        onPointerCancel={handleBoardPointerEnd}
+        animate={
+          celebrating
+            ? { x: [0, -6, 6, -4, 4, -2, 0] }
+            : { x: 0 }
+        }
+        transition={{ duration: 0.42, ease: 'easeOut' }}
+        className={`relative flex-1 w-full touch-none overflow-hidden transition-colors duration-300 select-none ${
+          celebrating ? 'bg-[#F6FEF9]' : 'bg-white'
+        }`}
+      >
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
+          className="h-full w-full touch-none select-none"
+          role="img"
+          aria-label={`Level ${level} Arrow Escape puzzle board`}
         >
-          {Array.from({ length: MAX_LIVES }).map((_, idx) => {
-            const active = idx < lives;
+          <defs>
+            <filter id="hint-glow" x="-30%" y="-30%" width="160%" height="160%">
+              <feDropShadow
+                dx="0"
+                dy="0"
+                stdDeviation="3.5"
+                floodColor="#2589FF"
+                floodOpacity="0.6"
+              />
+            </filter>
+          </defs>
+
+          {/* Subtle Dotted Grid Matrix (1 SVG path) */}
+          <path
+            d={dotsPathD}
+            fill="none"
+            stroke="#CBD5E1"
+            strokeWidth={dotRadius * 2}
+            strokeLinecap="round"
+          />
+
+          {/* Bent & Custom Path Arrows */}
+          {arrows.map((arrow) => (
+            <AnimatedPathArrow
+              key={arrow.id}
+              arrow={arrow}
+              cellStep={cellStep}
+              strokeWidth={strokeWidth}
+              arrowTipScale={arrowTipScale}
+              baseStrokeColor="#0F172A"
+              isHinted={arrow.id === hintTargetId}
+              onTap={handleTapArrow}
+              onEscapeComplete={handleEscapeComplete}
+              onBlockedComplete={handleBlockedComplete}
+              onPenaltyComplete={handlePenaltyComplete}
+            />
+          ))}
+
+          {/* Collision ripple flash at obstructing cell on blocked tap */}
+          {impactFlash && (() => {
+            const center = cellCenter(impactFlash.pt, cellStep);
             return (
-              <Heart
-                key={idx}
-                className={`h-5 w-5 transition-all duration-200 ${
-                  active
-                    ? 'scale-100 fill-[#EF4444] text-[#EF4444]'
-                    : 'scale-90 fill-slate-200 text-slate-300'
-                }`}
-                aria-hidden="true"
+              <motion.circle
+                key={impactFlash.key}
+                cx={center.x}
+                cy={center.y}
+                initial={{ r: 4, opacity: 0.85 }}
+                animate={{ r: Math.max(16, cellStep * 0.45), opacity: 0 }}
+                transition={{ duration: 0.34, ease: 'easeOut' }}
+                fill="none"
+                stroke="#EF4444"
+                strokeWidth={2.5}
+                className="pointer-events-none"
               />
             );
-          })}
-        </motion.div>
+          })()}
+        </svg>
 
-        {/* Right: Difficulty pill */}
-        <div
-          className={`flex h-7 items-center rounded-full px-3 text-xs font-semibold ${difficultyTone}`}
-        >
-          {generated.difficulty}
-        </div>
-      </div>
-
-      {/* Central Minimalist Dotted-Matrix Board Card (Pinch-to-Zoom & Pan enabled) */}
-      <div className="my-auto flex w-full items-center justify-center py-2">
-        <motion.div
-          ref={viewportRef}
-          onPointerDown={handleBoardPointerDown}
-          onPointerMove={handleBoardPointerMove}
-          onPointerUp={handleBoardPointerEnd}
-          onPointerCancel={handleBoardPointerEnd}
-          animate={
-            celebrating
-              ? {
-                  x: [0, -6, 6, -4, 4, -2, 0],
-                  y: [0, -3, 2, -2, 1, 0],
-                  scale: [1, 1.028, 1],
-                }
-              : { x: 0, y: 0, scale: 1 }
-          }
-          transition={{ duration: 0.42, ease: 'easeOut' }}
-          className={`relative aspect-square w-full max-w-[368px] touch-none overflow-hidden rounded-3xl bg-white shadow-[0_14px_38px_-12px_rgba(15,23,42,0.09)] transition-shadow duration-300 select-none ${
-            celebrating
-              ? 'ring-2 ring-emerald-400/70 shadow-[0_18px_46px_-10px_rgba(16,185,129,0.28)]'
-              : 'ring-1 ring-slate-200/70'
-          }`}
-        >
-          <div
-            ref={zoomLayerRef}
-            className="h-full w-full"
-            style={{ transformOrigin: '0 0', willChange: 'transform' }}
-          >
-            <svg
-              viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
-              className="h-full w-full touch-none select-none"
-              role="img"
-              aria-label={`Level ${level} Arrow Escape puzzle board`}
-            >
-              <defs>
-                <filter id="hint-glow" x="-30%" y="-30%" width="160%" height="160%">
-                  <feDropShadow
-                    dx="0"
-                    dy="0"
-                    stdDeviation="3.5"
-                    floodColor="#2589FF"
-                    floodOpacity="0.6"
-                  />
-                </filter>
-              </defs>
-
-              {/* Subtle Dotted Grid Matrix (1 SVG path) */}
-              <path
-                d={dotsPathD}
-                fill="none"
-                stroke="#CBD5E1"
-                strokeWidth={dotRadius * 2}
-                strokeLinecap="round"
-              />
-
-              {/* Bent & Custom Path Arrows */}
-              {arrows.map((arrow) => (
-                <AnimatedPathArrow
-                  key={arrow.id}
-                  arrow={arrow}
-                  cellStep={cellStep}
-                  strokeWidth={strokeWidth}
-                  arrowTipScale={arrowTipScale}
-                  baseStrokeColor="#0F172A"
-                  isHinted={arrow.id === hintTargetId}
-                  onTap={handleTapArrow}
-                  onEscapeComplete={handleEscapeComplete}
-                  onBlockedComplete={handleBlockedComplete}
-                  onPenaltyComplete={handlePenaltyComplete}
-                />
-              ))}
-
-              {/* Collision ripple flash at obstructing cell on blocked tap */}
-              {impactFlash && (() => {
-                const center = cellCenter(impactFlash.pt, cellStep);
-                return (
-                  <motion.circle
-                    key={impactFlash.key}
-                    cx={center.x}
-                    cy={center.y}
-                    initial={{ r: 4, opacity: 0.85 }}
-                    animate={{ r: Math.max(16, cellStep * 0.45), opacity: 0 }}
-                    transition={{ duration: 0.34, ease: 'easeOut' }}
-                    fill="none"
-                    stroke="#EF4444"
-                    strokeWidth={2.5}
-                    className="pointer-events-none"
-                  />
-                );
-              })()}
-            </svg>
+        {/* Floating Bottom Controls over Open Canvas */}
+        <div className="safe-bottom pointer-events-none absolute right-4 bottom-4 left-4 flex items-center justify-between">
+          <div className="flex flex-1 justify-start">
+            {isZoomed && (
+              <button
+                type="button"
+                onClick={() => {
+                  feedback.playTap();
+                  resetZoomTransform(true);
+                }}
+                aria-label="Reset zoom to fit board"
+                className="pointer-events-auto flex h-10 items-center gap-1.5 rounded-full border border-slate-200/90 bg-white/95 px-3.5 text-[13px] font-bold text-slate-800 shadow-md backdrop-blur-xs transition-transform active:scale-95"
+              >
+                <Minimize2 className="h-3.5 w-3.5 text-[#2589FF]" />
+                <span className="font-mono-tabular">1.0×</span>
+              </button>
+            )}
           </div>
-        </motion.div>
-      </div>
+
+          <button
+            type="button"
+            onClick={handleUseHint}
+            aria-label={`Use hint (${hints} remaining)`}
+            className={`pointer-events-auto relative flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-[0_8px_24px_-4px_rgba(37,137,255,0.22)] transition-transform active:scale-92 ${
+              hintTargetId ? 'ring-2 ring-[#2589FF]' : 'ring-1 ring-slate-200/80'
+            }`}
+          >
+            <Lightbulb
+              className={`h-6 w-6 ${hints > 0 ? 'text-[#2589FF]' : 'text-slate-400'}`}
+            />
+            <span className="font-mono-tabular absolute -top-1 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#2589FF] px-1 text-[11px] font-bold text-white shadow-xs">
+              {hints}
+            </span>
+          </button>
+
+          <div className="flex-1" />
+        </div>
+      </motion.div>
 
       {/* Celebratory 60fps Confetti Cannons */}
       <ConfettiBurst triggerKey={confettiKey} />
-
-      {/* Bottom Floating Hint Control */}
-      <footer className="flex items-center justify-center pb-2">
-        <button
-          type="button"
-          onClick={handleUseHint}
-          aria-label={`Use hint (${hints} remaining)`}
-          className={`relative flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-[0_8px_24px_-4px_rgba(37,137,255,0.22)] transition-transform active:scale-92 ${
-            hintTargetId ? 'ring-2 ring-[#2589FF]' : 'ring-1 ring-slate-200/80'
-          }`}
-        >
-          <Lightbulb
-            className={`h-6 w-6 ${hints > 0 ? 'text-[#2589FF]' : 'text-slate-400'}`}
-          />
-          <span className="font-mono-tabular absolute -top-1 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[#2589FF] px-1 text-[11px] font-bold text-white shadow-xs">
-            {hints}
-          </span>
-        </button>
-      </footer>
 
       {/* Level Complete Modal */}
       {statusModal === 'cleared' && (

@@ -113,7 +113,7 @@ export const AnimatedPathArrow = memo(function AnimatedPathArrow({
 
     if (arrow.state === 'escaping') {
       applyColor(arrow.isBlocked ? BLOCKED_RED : ACTIVE_BLUE);
-      const travelDist = geom.bodyLen + 360;
+      const travelDist = geom.bodyLen + 560;
       const duration = Math.min(600, Math.max(470, 440 + geom.bodyLen * 0.45));
 
       const tick = (now: number) => {

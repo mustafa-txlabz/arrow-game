@@ -7,20 +7,35 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import {
+  Canvas,
+  Circle,
+  Group,
+  Path,
+  Skia,
+  type SkPath,
+  type SkPathBuilder,
+} from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, {
+  Easing,
   runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
+  useDerivedValue,
   useSharedValue,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Circle, Path } from 'react-native-svg';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import {
   ChevronLeft,
   Heart,
   Lightbulb,
+  Minimize2,
   Navigation2,
   PartyPopper,
   RotateCcw,
@@ -32,7 +47,6 @@ import {
   BOARD_VIEWBOX,
   type ArrowPolylineGeometry,
   buildArrowGeometry,
-  buildGridDotsPath,
   cellCenter,
 } from '../utils/arrowGeometry';
 import {
@@ -59,11 +73,113 @@ const MIN_ZOOM_SCALE = 1;
 const BLOCKED_RED = '#EF4444';
 const ACTIVE_BLUE = '#2589FF';
 
+function appendStemToBuilder(
+  builder: SkPathBuilder,
+  geom: ArrowPolylineGeometry
+): void {
+  const { restPtsX, restPtsY } = geom;
+  if (restPtsX.length === 0) return;
+  builder.moveTo(restPtsX[0], restPtsY[0]);
+  for (let i = 1; i < restPtsX.length; i++) {
+    builder.lineTo(restPtsX[i], restPtsY[i]);
+  }
+}
+
+function appendHeadToBuilder(
+  builder: SkPathBuilder,
+  geom: ArrowPolylineGeometry,
+  tipScale: number
+): void {
+  const { x: hx, y: hy, angle } = geom.restHead;
+  const rad = (angle * Math.PI) / 180;
+  const cos = Math.cos(rad) * tipScale;
+  const sin = Math.sin(rad) * tipScale;
+  builder.moveTo(hx + 6 * cos, hy + 6 * sin);
+  builder.lineTo(hx - 5.5 * cos + 5.8 * sin, hy - 5.5 * sin - 5.8 * cos);
+  builder.lineTo(hx - 3.5 * cos, hy - 3.5 * sin);
+  builder.lineTo(hx - 5.5 * cos - 5.8 * sin, hy - 5.5 * sin + 5.8 * cos);
+  builder.close();
+}
+
+function buildBatchPaths(
+  arrows: ArrowTile[],
+  geomById: Map<string, ArrowPolylineGeometry>,
+  hintTargetId: string | null,
+  arrowTipScale: number
+): {
+  remainingCount: number;
+  haloPath: SkPath | null;
+  blackStemPath: SkPath | null;
+  blackHeadPath: SkPath | null;
+  redStemPath: SkPath | null;
+  redHeadPath: SkPath | null;
+  hintStemPath: SkPath | null;
+  hintHeadPath: SkPath | null;
+  animatingArrows: ArrowTile[];
+} {
+  const haloB = Skia.PathBuilder.Make();
+  const blackStemB = Skia.PathBuilder.Make();
+  const blackHeadB = Skia.PathBuilder.Make();
+  const redStemB = Skia.PathBuilder.Make();
+  const redHeadB = Skia.PathBuilder.Make();
+  const hintStemB = Skia.PathBuilder.Make();
+  const hintHeadB = Skia.PathBuilder.Make();
+
+  let hasHalo = false;
+  let hasBlack = false;
+  let hasRed = false;
+  let hasHint = false;
+  const active: ArrowTile[] = [];
+  let remaining = 0;
+
+  for (let i = 0; i < arrows.length; i++) {
+    const a = arrows[i];
+    if (a.state !== 'escaping') {
+      remaining += 1;
+    }
+    if (a.state !== 'idle') {
+      active.push(a);
+      continue;
+    }
+    const geom = geomById.get(a.id);
+    if (!geom) continue;
+    hasHalo = true;
+    appendStemToBuilder(haloB, geom);
+
+    if (a.id === hintTargetId) {
+      hasHint = true;
+      appendStemToBuilder(hintStemB, geom);
+      appendHeadToBuilder(hintHeadB, geom, arrowTipScale);
+    } else if (a.isBlocked) {
+      hasRed = true;
+      appendStemToBuilder(redStemB, geom);
+      appendHeadToBuilder(redHeadB, geom, arrowTipScale);
+    } else {
+      hasBlack = true;
+      appendStemToBuilder(blackStemB, geom);
+      appendHeadToBuilder(blackHeadB, geom, arrowTipScale);
+    }
+  }
+
+  return {
+    remainingCount: remaining,
+    haloPath: hasHalo ? haloB.detach() : null,
+    blackStemPath: hasBlack ? blackStemB.detach() : null,
+    blackHeadPath: hasBlack ? blackHeadB.detach() : null,
+    redStemPath: hasRed ? redStemB.detach() : null,
+    redHeadPath: hasRed ? redHeadB.detach() : null,
+    hintStemPath: hasHint ? hintStemB.detach() : null,
+    hintHeadPath: hasHint ? hintHeadB.detach() : null,
+    animatingArrows: active,
+  };
+}
+
 /**
- * Ultra-fast minimalist light-mode Gameplay Screen for Arrow Escape (React Native):
- * - Compound SVG path batching: all grid dots + all static idle/blocked arrows render in ~4-7 native SVG Paths total.
- * - O(1) grid-cell hit-testing inside RNGH Tap gesture (zero per-arrow SVG hitTest overhead).
- * - UI-thread Reanimated worklets for pinch/pan, arrow escape/rebound, and HUD/board shakes.
+ * Full-bleed GPU-accelerated Skia Gameplay Screen for Arrow Escape:
+ * - True vector GPU rendering via @shopify/react-native-skia: zero bitmap scaling,
+ *   zero pixel blur or jagged edges even at 7x+ zoom.
+ * - Edge-to-edge open canvas playfield with focal-anchored pinch-to-zoom & smooth panning.
+ * - O(1) Int32Array grid-cell hit-testing directly inside RNGH Tap gesture.
  */
 export function GameplayScreen({
   level,
@@ -74,6 +190,7 @@ export function GameplayScreen({
   onLevelComplete,
 }: GameplayScreenProps) {
   const generated = useMemo(() => generateLevel(level), [level]);
+  const insets = useSafeAreaInsets();
 
   const [arrows, setArrows] = useState<ArrowTile[]>(generated.arrows);
   const [lives, setLives] = useState<number>(MAX_LIVES);
@@ -85,6 +202,7 @@ export function GameplayScreen({
   const [celebrating, setCelebrating] = useState<boolean>(false);
   const [confettiKey, setConfettiKey] = useState<number>(0);
   const [statusModal, setStatusModal] = useState<'none' | 'cleared' | 'failed'>('none');
+  const [isZoomed, setIsZoomed] = useState<boolean>(false);
 
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const livesRef = useRef<number>(MAX_LIVES);
@@ -100,16 +218,24 @@ export function GameplayScreen({
   const heartsShakeX = useSharedValue(0);
   const boardShakeX = useSharedValue(0);
 
-  const defaultBoardPx = Math.min(Dimensions.get('window').width - 32, 368);
-  const boardSize = useSharedValue(defaultBoardPx);
-  const scale = useSharedValue(1);
-  const tx = useSharedValue(0);
-  const ty = useSharedValue(0);
-  const savedScale = useSharedValue(1);
+  // Full-bleed playfield camera shared values (GPU-driven at 120fps)
+  const initialWin = Dimensions.get('window');
+  const initialFit = Math.max(240, Math.min(initialWin.width - 24, initialWin.height * 0.62));
+  const viewportW = useSharedValue(initialWin.width);
+  const viewportH = useSharedValue(Math.max(320, initialWin.height - 140));
+  const usableHVal = useSharedValue(Math.max(240, initialWin.height - 230));
+  const baseScale = useSharedValue(initialFit / BOARD_VIEWBOX);
+  const baseOx = useSharedValue((initialWin.width - initialFit) * 0.5);
+  const baseOy = useSharedValue(16);
+
+  const zoom = useSharedValue(1);
+  const tx = useSharedValue((initialWin.width - initialFit) * 0.5);
+  const ty = useSharedValue(16);
+  const savedZoom = useSharedValue(1);
   const savedTx = useSharedValue(0);
   const savedTy = useSharedValue(0);
-  const pinchStartFx = useSharedValue(0);
-  const pinchStartFy = useSharedValue(0);
+  const pinchFocusBx = useSharedValue(BOARD_VIEWBOX * 0.5);
+  const pinchFocusBy = useSharedValue(BOARD_VIEWBOX * 0.5);
   const pinchMoved = useSharedValue(false);
   const panMoved = useSharedValue(false);
 
@@ -120,10 +246,19 @@ export function GameplayScreen({
   const haloWidth = strokeWidth + Math.min(4.0, strokeWidth * 0.95);
   const headStrokeWidth = Math.max(0.45, 1.2 * arrowTipScale);
 
-  // Precompute all level geometry, compound grid dots path, and initial cell ownership once per level
+  // Precompute all level geometry, 1-draw-call Skia grid dots SkPath, and initial cell ownership
   const levelData = useMemo(() => {
     const gridSize = generated.gridSize;
-    const dotsPathD = buildGridDotsPath(gridSize, cellStep);
+    const dotsBuilder = Skia.PathBuilder.Make();
+    for (let r = 0; r < gridSize; r++) {
+      const y = BOARD_PAD + r * cellStep + cellStep * 0.5;
+      for (let c = 0; c < gridSize; c++) {
+        const x = BOARD_PAD + c * cellStep + cellStep * 0.5;
+        dotsBuilder.addCircle(x, y, dotRadius);
+      }
+    }
+    const dotsPath = dotsBuilder.detach();
+
     const geomById = new Map<string, ArrowPolylineGeometry>();
     const initialCellOwner = new Int32Array(gridSize * gridSize).fill(-1);
 
@@ -136,10 +271,9 @@ export function GameplayScreen({
       }
     }
 
-    return { dotsPathD, geomById, initialCellOwner };
-  }, [generated, cellStep, arrowTipScale]);
+    return { dotsPath, geomById, initialCellOwner };
+  }, [generated, cellStep, arrowTipScale, dotRadius]);
 
-  // Keep an O(1) lookup map synced to current React state
   const arrowsById = useMemo(() => {
     const map = new Map<string, ArrowTile>();
     for (let i = 0; i < arrows.length; i++) {
@@ -150,18 +284,28 @@ export function GameplayScreen({
   arrowsByIdRef.current = arrowsById;
 
   const maxZoomScale = useMemo(
-    () => Math.min(7.2, Math.max(2.4, generated.gridSize * 0.23)),
+    () => Math.min(8.0, Math.max(2.6, generated.gridSize * 0.25)),
     [generated.gridSize]
   );
 
-  const resetZoomTransform = useCallback(() => {
-    scale.value = 1;
-    tx.value = 0;
-    ty.value = 0;
-    savedScale.value = 1;
-    savedTx.value = 0;
-    savedTy.value = 0;
-  }, [scale, tx, ty, savedScale, savedTx, savedTy]);
+  const resetZoomTransform = useCallback(
+    (animated = false) => {
+      if (animated) {
+        const ease = { duration: 220, easing: Easing.out(Easing.cubic) };
+        zoom.value = withTiming(1, ease);
+        tx.value = withTiming(baseOx.value, ease);
+        ty.value = withTiming(baseOy.value, ease);
+      } else {
+        zoom.value = 1;
+        tx.value = baseOx.value;
+        ty.value = baseOy.value;
+      }
+      savedZoom.value = 1;
+      savedTx.value = baseOx.value;
+      savedTy.value = baseOy.value;
+    },
+    [baseOx, baseOy, savedTx, savedTy, savedZoom, tx, ty, zoom]
+  );
 
   const scheduleTimeout = (fn: () => void, ms: number) => {
     const id = setTimeout(fn, ms);
@@ -187,10 +331,49 @@ export function GameplayScreen({
     setImpactFlash(null);
     setCelebrating(false);
     setStatusModal('none');
-    resetZoomTransform();
+    resetZoomTransform(false);
     feedback.unlock();
     return clearScheduledTimeouts;
   }, [generated, levelData.initialCellOwner, resetZoomTransform]);
+
+  useAnimatedReaction(
+    () => zoom.value > 1.08,
+    (curr, prev) => {
+      if (curr !== prev) {
+        runOnJS(setIsZoomed)(curr);
+      }
+    }
+  );
+
+  const handlePlayfieldLayout = useCallback(
+    (w: number, h: number) => {
+      if (w <= 0 || h <= 0) return;
+      const bottomReserve = Math.max(84, insets.bottom + 76);
+      const uH = Math.max(180, h - bottomReserve);
+      const fit = Math.max(180, Math.min(w - 20, uH - 12));
+      const nextBaseScale = fit / BOARD_VIEWBOX;
+      const nextOx = (w - fit) * 0.5;
+      const nextOy = Math.max(8, (uH - fit) * 0.5);
+
+      const prevOx = baseOx.value;
+      const prevOy = baseOy.value;
+      viewportW.value = w;
+      viewportH.value = h;
+      usableHVal.value = uH;
+      baseScale.value = nextBaseScale;
+      baseOx.value = nextOx;
+      baseOy.value = nextOy;
+
+      if (zoom.value <= 1.005) {
+        tx.value = nextOx;
+        ty.value = nextOy;
+      } else {
+        tx.value += nextOx - prevOx;
+        ty.value += nextOy - prevOy;
+      }
+    },
+    [baseOx, baseOy, baseScale, insets.bottom, tx, ty, usableHVal, viewportH, viewportW, zoom]
+  );
 
   const triggerHeartsShake = useCallback(() => {
     heartsShakeX.value = 0;
@@ -235,7 +418,7 @@ export function GameplayScreen({
     setImpactFlash(null);
     setCelebrating(false);
     setStatusModal('none');
-    resetZoomTransform();
+    resetZoomTransform(false);
   };
 
   const handleEscapeComplete = useCallback(
@@ -302,7 +485,6 @@ export function GameplayScreen({
       );
 
       if (clear) {
-        // Release occupancy & cell ownership synchronously so rapid multi-taps on inner arrows never drop
         escapingIdsRef.current.add(arrow.id);
         const occ = occGridRef.current;
         const owners = cellOwnerRef.current;
@@ -321,7 +503,6 @@ export function GameplayScreen({
         return;
       }
 
-      // Blocked: slide across open gap, hit blocker, turn permanently red, and rebound elastically
       const isFirstPenalty = !arrow.isBlocked;
       const singleHeadOffset =
         arrow.cells.length === 1 ? Math.min(cellStep * 0.22, 14) : 0;
@@ -379,27 +560,23 @@ export function GameplayScreen({
     [cellStep, generated.gridSize, strokeWidth, triggerHeartsShake]
   );
 
-  // O(1) Grid-cell tap resolver running straight from RNGH Tap coordinates
+  // O(1) Grid-cell tap resolver mapped directly from screen pixel -> board coordinates
   const handleBoardTap = useCallback(
     (
       screenX: number,
       screenY: number,
-      curScale: number,
+      curZoom: number,
       curTx: number,
       curTy: number,
-      curBoardSize: number
+      curBaseScale: number
     ) => {
       if (statusModalRef.current !== 'none') return;
       if (Date.now() < suppressTapUntilRef.current) return;
-      if (curBoardSize <= 0) return;
+      const totalScale = curBaseScale * curZoom;
+      if (totalScale <= 0) return;
 
-      const half = curBoardSize * 0.5;
-      const safeScale = curScale > 0 ? curScale : 1;
-      const baseX = half + (screenX - half - curTx) / safeScale;
-      const baseY = half + (screenY - half - curTy) / safeScale;
-
-      const vx = (baseX / curBoardSize) * BOARD_VIEWBOX;
-      const vy = (baseY / curBoardSize) * BOARD_VIEWBOX;
+      const vx = (screenX - curTx) / totalScale;
+      const vy = (screenY - curTy) / totalScale;
 
       const gridSize = generated.gridSize;
       const fc = (vx - BOARD_PAD) / cellStep;
@@ -411,7 +588,6 @@ export function GameplayScreen({
       const baseArrows = generated.arrows;
       const liveMap = arrowsByIdRef.current;
 
-      // Fast path: direct cell hit
       if (r0 >= 0 && r0 < gridSize && c0 >= 0 && c0 < gridSize) {
         const ownerIdx = owners[r0 * gridSize + c0];
         if (ownerIdx >= 0) {
@@ -423,7 +599,6 @@ export function GameplayScreen({
         }
       }
 
-      // Nearest occupied cell fallback within ~0.68 cell radius for edge/corner finger taps
       let bestArrow: ArrowTile | null = null;
       let bestDistSq = 0.68 * 0.68;
       const rMin = Math.max(0, r0 - 1);
@@ -455,86 +630,136 @@ export function GameplayScreen({
     [cellStep, generated.arrows, generated.gridSize, handleTapArrow]
   );
 
+  const clampCameraWorklet = useCallback(
+    (nextZoom: number, nextTx: number, nextTy: number) => {
+      'worklet';
+      const w = viewportW.value;
+      const h = viewportH.value;
+      const uH = usableHVal.value;
+      const ox = baseOx.value;
+      const oy = baseOy.value;
+      const bScale = baseScale.value;
+
+      const z = Math.min(maxZoomScale, Math.max(MIN_ZOOM_SCALE, nextZoom));
+      if (z <= 1.0005) {
+        return { z: 1, x: ox, y: oy };
+      }
+
+      const t = Math.min(1, (z - 1) / 0.25);
+      const scaledBoard = BOARD_VIEWBOX * bScale * z;
+      const freeMinTx = Math.min(ox, w * 0.36 - scaledBoard);
+      const freeMaxTx = Math.max(ox, w * 0.64);
+      const freeMinTy = Math.min(oy, uH * 0.36 - scaledBoard);
+      const freeMaxTy = Math.max(oy, h * 0.66);
+
+      const minTx = ox + (freeMinTx - ox) * t;
+      const maxTx = ox + (freeMaxTx - ox) * t;
+      const minTy = oy + (freeMinTy - oy) * t;
+      const maxTy = oy + (freeMaxTy - oy) * t;
+
+      return {
+        z,
+        x: Math.max(minTx, Math.min(maxTx, nextTx)),
+        y: Math.max(minTy, Math.min(maxTy, nextTy)),
+      };
+    },
+    [baseOx, baseOy, baseScale, maxZoomScale, usableHVal, viewportH, viewportW]
+  );
+
   const pinchGesture = useMemo(
     () =>
       Gesture.Pinch()
         .onStart((e) => {
+          'worklet';
           pinchMoved.value = false;
-          savedScale.value = scale.value;
+          savedZoom.value = zoom.value;
           savedTx.value = tx.value;
           savedTy.value = ty.value;
-          pinchStartFx.value = e.focalX - boardSize.value * 0.5;
-          pinchStartFy.value = e.focalY - boardSize.value * 0.5;
+          const totalS = baseScale.value * zoom.value;
+          pinchFocusBx.value = (e.focalX - tx.value) / totalS;
+          pinchFocusBy.value = (e.focalY - ty.value) / totalS;
         })
         .onUpdate((e) => {
-          if (e.numberOfPointers >= 2 || Math.abs(e.scale - 1) > 0.025) {
+          'worklet';
+          if (e.numberOfPointers >= 2 || Math.abs(e.scale - 1) > 0.02) {
             pinchMoved.value = true;
           }
-          const nextScale = Math.min(
+          const rawZoom = savedZoom.value * e.scale;
+          const clampedZoom = Math.min(
             maxZoomScale,
-            Math.max(MIN_ZOOM_SCALE, savedScale.value * e.scale)
+            Math.max(MIN_ZOOM_SCALE, rawZoom)
           );
-          if (nextScale <= MIN_ZOOM_SCALE) {
-            scale.value = MIN_ZOOM_SCALE;
-            tx.value = 0;
-            ty.value = 0;
-            return;
-          }
-          const fx = e.focalX - boardSize.value * 0.5;
-          const fy = e.focalY - boardSize.value * 0.5;
-          const bx = (pinchStartFx.value - savedTx.value) / savedScale.value;
-          const by = (pinchStartFy.value - savedTy.value) / savedScale.value;
-          const maxOffset = boardSize.value * (nextScale - 1) * 0.5;
-          scale.value = nextScale;
-          tx.value = Math.max(-maxOffset, Math.min(maxOffset, fx - bx * nextScale));
-          ty.value = Math.max(-maxOffset, Math.min(maxOffset, fy - by * nextScale));
+          const nextTotalS = baseScale.value * clampedZoom;
+          const rawTx = e.focalX - pinchFocusBx.value * nextTotalS;
+          const rawTy = e.focalY - pinchFocusBy.value * nextTotalS;
+          const c = clampCameraWorklet(clampedZoom, rawTx, rawTy);
+          zoom.value = c.z;
+          tx.value = c.x;
+          ty.value = c.y;
         })
         .onEnd(() => {
+          'worklet';
           if (pinchMoved.value) {
             runOnJS(markPinchEnd)();
           }
+          if (zoom.value < 1.05) {
+            const ease = { duration: 150, easing: Easing.out(Easing.cubic) };
+            zoom.value = withTiming(1, ease);
+            tx.value = withTiming(baseOx.value, ease);
+            ty.value = withTiming(baseOy.value, ease);
+          }
         }),
     [
-      boardSize,
+      baseOx,
+      baseOy,
+      baseScale,
+      clampCameraWorklet,
       markPinchEnd,
       maxZoomScale,
+      pinchFocusBx,
+      pinchFocusBy,
       pinchMoved,
-      pinchStartFx,
-      pinchStartFy,
-      savedScale,
       savedTx,
       savedTy,
-      scale,
+      savedZoom,
       tx,
       ty,
+      zoom,
     ]
   );
 
   const panGesture = useMemo(
     () =>
       Gesture.Pan()
-        .minDistance(14)
+        .minDistance(12)
         .maxPointers(1)
         .onStart(() => {
+          'worklet';
           panMoved.value = false;
           savedTx.value = tx.value;
           savedTy.value = ty.value;
         })
         .onUpdate((e) => {
-          if (scale.value <= MIN_ZOOM_SCALE) return;
+          'worklet';
+          if (zoom.value <= 1.001) return;
           if (Math.abs(e.translationX) > 6 || Math.abs(e.translationY) > 6) {
             panMoved.value = true;
           }
-          const maxOffset = boardSize.value * (scale.value - 1) * 0.5;
-          tx.value = Math.max(-maxOffset, Math.min(maxOffset, savedTx.value + e.translationX));
-          ty.value = Math.max(-maxOffset, Math.min(maxOffset, savedTy.value + e.translationY));
+          const c = clampCameraWorklet(
+            zoom.value,
+            savedTx.value + e.translationX,
+            savedTy.value + e.translationY
+          );
+          tx.value = c.x;
+          ty.value = c.y;
         })
         .onEnd(() => {
-          if (panMoved.value && scale.value > MIN_ZOOM_SCALE) {
+          'worklet';
+          if (panMoved.value && zoom.value > 1.001) {
             runOnJS(markPanEnd)();
           }
         }),
-    [boardSize, markPanEnd, panMoved, savedTx, savedTy, scale, tx, ty]
+    [clampCameraWorklet, markPanEnd, panMoved, savedTx, savedTy, tx, ty, zoom]
   );
 
   const tapGesture = useMemo(
@@ -548,13 +773,13 @@ export function GameplayScreen({
           runOnJS(handleBoardTap)(
             e.x,
             e.y,
-            scale.value,
+            zoom.value,
             tx.value,
             ty.value,
-            boardSize.value
+            baseScale.value
           );
         }),
-    [boardSize, handleBoardTap, scale, tx, ty]
+    [baseScale, handleBoardTap, tx, ty, zoom]
   );
 
   const composedGesture = useMemo(
@@ -562,80 +787,34 @@ export function GameplayScreen({
     [pinchGesture, panGesture, tapGesture]
   );
 
-  const zoomAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: tx.value },
+  const cameraTransform = useDerivedValue(() => {
+    'worklet';
+    return [
+      { translateX: tx.value + boardShakeX.value },
       { translateY: ty.value },
-      { scale: scale.value },
-    ],
-  }));
+      { scale: baseScale.value * zoom.value },
+    ];
+  });
 
   const heartsAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: heartsShakeX.value }],
   }));
 
-  const boardAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: boardShakeX.value }],
-  }));
-
-  // Batch ALL static idle arrows into at most ~5 compound <Path> layers + separate out only the 1-3 animating arrows
+  // Batch ALL static idle arrows into Skia GPU SkPath layers + separate out only moving runners
   const {
     remainingCount,
-    haloD,
-    blackStemD,
-    blackHeadD,
-    redStemD,
-    redHeadD,
-    hintStemD,
-    hintHeadD,
+    haloPath,
+    blackStemPath,
+    blackHeadPath,
+    redStemPath,
+    redHeadPath,
+    hintStemPath,
+    hintHeadPath,
     animatingArrows,
-  } = useMemo(() => {
-    const haloParts: string[] = [];
-    const blackStemParts: string[] = [];
-    const blackHeadParts: string[] = [];
-    const redStemParts: string[] = [];
-    const redHeadParts: string[] = [];
-    let hintedStem = '';
-    let hintedHead = '';
-    const active: ArrowTile[] = [];
-    let remaining = 0;
-
-    for (let i = 0; i < arrows.length; i++) {
-      const a = arrows[i];
-      if (a.state !== 'escaping') {
-        remaining += 1;
-      }
-      if (a.state !== 'idle') {
-        active.push(a);
-        continue;
-      }
-      const geom = levelData.geomById.get(a.id);
-      if (!geom) continue;
-      haloParts.push(geom.restD);
-      if (a.id === hintTargetId) {
-        hintedStem = geom.restD;
-        hintedHead = geom.restHeadD;
-      } else if (a.isBlocked) {
-        redStemParts.push(geom.restD);
-        redHeadParts.push(geom.restHeadD);
-      } else {
-        blackStemParts.push(geom.restD);
-        blackHeadParts.push(geom.restHeadD);
-      }
-    }
-
-    return {
-      remainingCount: remaining,
-      haloD: haloParts.join(' '),
-      blackStemD: blackStemParts.join(' '),
-      blackHeadD: blackHeadParts.join(' '),
-      redStemD: redStemParts.join(' '),
-      redHeadD: redHeadParts.join(' '),
-      hintStemD: hintedStem,
-      hintHeadD: hintedHead,
-      animatingArrows: active,
-    };
-  }, [arrows, hintTargetId, levelData.geomById]);
+  } = useMemo(
+    () => buildBatchPaths(arrows, levelData.geomById, hintTargetId, arrowTipScale),
+    [arrows, levelData.geomById, hintTargetId, arrowTipScale]
+  );
 
   const handleUseHint = () => {
     if (statusModal !== 'none' || remainingCount === 0) return;
@@ -652,6 +831,26 @@ export function GameplayScreen({
     if (onConsumeHint()) {
       feedback.playHint();
       setHintTargetId(candidate.id);
+
+      // If zoomed in and hinted arrow is outside visible area, smoothly glide camera to reveal it
+      if (zoom.value > 1.15) {
+        const geom = levelData.geomById.get(candidate.id);
+        if (geom) {
+          const totalS = baseScale.value * zoom.value;
+          const sx = tx.value + geom.restHead.x * totalS;
+          const sy = ty.value + geom.restHead.y * totalS;
+          const w = viewportW.value;
+          const uH = usableHVal.value;
+          if (sx < 44 || sx > w - 44 || sy < 44 || sy > uH - 44) {
+            const targetTx = w * 0.5 - geom.restHead.x * totalS;
+            const targetTy = uH * 0.5 - geom.restHead.y * totalS;
+            const c = clampCameraWorklet(zoom.value, targetTx, targetTy);
+            const ease = { duration: 280, easing: Easing.out(Easing.cubic) };
+            tx.value = withTiming(c.x, ease);
+            ty.value = withTiming(c.y, ease);
+          }
+        }
+      }
     }
   };
 
@@ -673,262 +872,298 @@ export function GameplayScreen({
           ? '#B45309'
           : '#BE123C';
 
+  const impactCenter = impactFlash
+    ? cellCenter(impactFlash.pt, cellStep)
+    : null;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Top Header Bar */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          activeOpacity={0.8}
-          onPress={() => {
-            feedback.playTap();
-            onBackHome();
-          }}
-          accessibilityLabel="Back to home"
-          style={styles.headerIconBtn}
-        >
-          <ChevronLeft size={24} color="#2589FF" strokeWidth={2.5} />
-        </TouchableOpacity>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Compact Top HUD Strip */}
+      <View style={styles.hudChrome}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              feedback.playTap();
+              onBackHome();
+            }}
+            accessibilityLabel="Back to home"
+            style={styles.headerIconBtn}
+          >
+            <ChevronLeft size={24} color="#2589FF" strokeWidth={2.5} />
+          </TouchableOpacity>
 
-        <Text style={styles.levelTitle}>Level {level}</Text>
+          <Text style={styles.levelTitle}>Level {level}</Text>
 
-        <TouchableOpacity
-          activeOpacity={0.8}
-          onPress={() => {
-            feedback.playTap();
-            onOpenSettings();
-          }}
-          accessibilityLabel="Open settings"
-          style={styles.headerIconBtn}
-        >
-          <Settings size={20} color="#2589FF" strokeWidth={2.2} />
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => {
+              feedback.playTap();
+              onOpenSettings();
+            }}
+            accessibilityLabel="Open settings"
+            style={styles.headerIconBtn}
+          >
+            <Settings size={20} color="#2589FF" strokeWidth={2.2} />
+          </TouchableOpacity>
+        </View>
 
-      {/* Sub-HUD / Status Bar */}
-      <View style={styles.subHud}>
-        <View style={styles.remainingPill}>
-          <View style={styles.navIconRotated}>
-            <Navigation2 size={12} color="#334155" fill="#334155" />
+        <View style={styles.subHud}>
+          <View style={styles.remainingPill}>
+            <View style={styles.navIconRotated}>
+              <Navigation2 size={12} color="#334155" fill="#334155" />
+            </View>
+            <Text style={styles.remainingText}>{remainingCount}</Text>
           </View>
-          <Text style={styles.remainingText}>{remainingCount}</Text>
-        </View>
 
-        <Reanimated.View style={[styles.heartsRow, heartsAnimatedStyle]}>
-          {Array.from({ length: MAX_LIVES }).map((_, idx) => {
-            const active = idx < lives;
-            return (
-              <Heart
-                key={idx}
-                size={20}
-                color={active ? '#EF4444' : '#CBD5E1'}
-                fill={active ? '#EF4444' : '#E2E8F0'}
-                style={!active && styles.lostHeart}
-              />
-            );
-          })}
-        </Reanimated.View>
+          <Reanimated.View style={[styles.heartsRow, heartsAnimatedStyle]}>
+            {Array.from({ length: MAX_LIVES }).map((_, idx) => {
+              const active = idx < lives;
+              return (
+                <Heart
+                  key={idx}
+                  size={20}
+                  color={active ? '#EF4444' : '#CBD5E1'}
+                  fill={active ? '#EF4444' : '#E2E8F0'}
+                  style={!active && styles.lostHeart}
+                />
+              );
+            })}
+          </Reanimated.View>
 
-        <View style={[styles.difficultyPill, { backgroundColor: difficultyBg }]}>
-          <Text style={[styles.difficultyLabel, { color: difficultyText }]}>
-            {generated.difficulty}
-          </Text>
+          <View style={[styles.difficultyPill, { backgroundColor: difficultyBg }]}>
+            <Text style={[styles.difficultyLabel, { color: difficultyText }]}>
+              {generated.difficulty}
+            </Text>
+          </View>
         </View>
       </View>
 
-      {/* Central Dotted-Matrix Board Card with Pinch-to-Zoom, Pan & O(1) Tap */}
-      <View style={styles.boardOuter}>
-        <Reanimated.View
-          onLayout={(e) => {
-            const w = e.nativeEvent.layout.width;
-            if (w > 0) boardSize.value = w;
-          }}
+      {/* Full-Bleed Edge-to-Edge Vector Skia Playfield */}
+      <View
+        style={[
+          styles.playfieldWrap,
+          celebrating && styles.playfieldCelebrating,
+        ]}
+        onLayout={(e) => {
+          handlePlayfieldLayout(
+            e.nativeEvent.layout.width,
+            e.nativeEvent.layout.height
+          );
+        }}
+      >
+        <GestureDetector gesture={composedGesture}>
+          <View collapsable={false} style={styles.canvasContainer}>
+            <Canvas style={styles.skiaCanvas}>
+              <Group transform={cameraTransform}>
+                {/* 1-draw-call GPU Vector Dotted Grid Matrix */}
+                <Path
+                  path={levelData.dotsPath}
+                  style="fill"
+                  color="#CBD5E1"
+                />
+
+                {/* Optional Hint Glow Aura */}
+                {hintStemPath && (
+                  <Path
+                    path={hintStemPath}
+                    style="stroke"
+                    color="rgba(37, 137, 255, 0.25)"
+                    strokeWidth={strokeWidth + 8}
+                    strokeCap="round"
+                    strokeJoin="round"
+                  />
+                )}
+
+                {/* Batched White Halo Backing for All Resting Arrows */}
+                {haloPath && (
+                  <Path
+                    path={haloPath}
+                    style="stroke"
+                    color="#FFFFFF"
+                    opacity={0.9}
+                    strokeWidth={haloWidth}
+                    strokeCap="round"
+                    strokeJoin="round"
+                  />
+                )}
+
+                {/* Batched Normal Resting Arrows (Stems + Heads) */}
+                {blackStemPath && (
+                  <Path
+                    path={blackStemPath}
+                    style="stroke"
+                    color="#0F172A"
+                    strokeWidth={strokeWidth}
+                    strokeCap="round"
+                    strokeJoin="round"
+                  />
+                )}
+                {blackHeadPath && (
+                  <>
+                    <Path path={blackHeadPath} style="fill" color="#0F172A" />
+                    <Path
+                      path={blackHeadPath}
+                      style="stroke"
+                      color="#0F172A"
+                      strokeWidth={headStrokeWidth}
+                      strokeJoin="round"
+                    />
+                  </>
+                )}
+
+                {/* Batched Permanently-Blocked Red Resting Arrows (Stems + Heads) */}
+                {redStemPath && (
+                  <Path
+                    path={redStemPath}
+                    style="stroke"
+                    color={BLOCKED_RED}
+                    strokeWidth={strokeWidth}
+                    strokeCap="round"
+                    strokeJoin="round"
+                  />
+                )}
+                {redHeadPath && (
+                  <>
+                    <Path path={redHeadPath} style="fill" color={BLOCKED_RED} />
+                    <Path
+                      path={redHeadPath}
+                      style="stroke"
+                      color={BLOCKED_RED}
+                      strokeWidth={headStrokeWidth}
+                      strokeJoin="round"
+                    />
+                  </>
+                )}
+
+                {/* Hinted Resting Arrow Highlight (Stem + Head) */}
+                {hintStemPath && (
+                  <Path
+                    path={hintStemPath}
+                    style="stroke"
+                    color={ACTIVE_BLUE}
+                    strokeWidth={strokeWidth}
+                    strokeCap="round"
+                    strokeJoin="round"
+                  />
+                )}
+                {hintHeadPath && (
+                  <>
+                    <Path path={hintHeadPath} style="fill" color={ACTIVE_BLUE} />
+                    <Path
+                      path={hintHeadPath}
+                      style="stroke"
+                      color={ACTIVE_BLUE}
+                      strokeWidth={headStrokeWidth}
+                      strokeJoin="round"
+                    />
+                  </>
+                )}
+
+                {/* Active UI-thread Skia Runners (mounted ONLY while moving) */}
+                {animatingArrows.map((arrow) => {
+                  const geom = levelData.geomById.get(arrow.id);
+                  if (!geom || arrow.state === 'idle') return null;
+                  const restColor = arrow.isBlocked
+                    ? BLOCKED_RED
+                    : arrow.id === hintTargetId
+                      ? ACTIVE_BLUE
+                      : '#0F172A';
+                  return (
+                    <ActiveArrowRunner
+                      key={arrow.id}
+                      id={arrow.id}
+                      mode={arrow.state}
+                      isBlocked={Boolean(arrow.isBlocked)}
+                      restColor={restColor}
+                      strokeWidth={strokeWidth}
+                      arrowTipScale={arrowTipScale}
+                      cellStep={cellStep}
+                      bumpDistancePx={arrow.bumpDistancePx}
+                      bumpDurationMs={arrow.bumpDurationMs}
+                      geom={geom}
+                      showHintHalo={
+                        arrow.id === hintTargetId ||
+                        (arrow.state === 'escaping' && !arrow.isBlocked)
+                      }
+                      onEscapeComplete={handleEscapeComplete}
+                      onBlockedComplete={handleBlockedComplete}
+                      onPenaltyComplete={handlePenaltyComplete}
+                    />
+                  );
+                })}
+
+                {/* Collision ripple highlight at obstructing cell */}
+                {impactCenter && (
+                  <Group>
+                    <Circle
+                      cx={impactCenter.x}
+                      cy={impactCenter.y}
+                      r={Math.max(12, cellStep * 0.38)}
+                      color="rgba(239, 68, 68, 0.14)"
+                      style="fill"
+                    />
+                    <Circle
+                      cx={impactCenter.x}
+                      cy={impactCenter.y}
+                      r={Math.max(12, cellStep * 0.38)}
+                      color="#EF4444"
+                      style="stroke"
+                      strokeWidth={2.5}
+                    />
+                  </Group>
+                )}
+              </Group>
+            </Canvas>
+          </View>
+        </GestureDetector>
+
+        {/* Floating Bottom Controls over Open Canvas */}
+        <View
+          pointerEvents="box-none"
           style={[
-            styles.boardCard,
-            celebrating && styles.boardCardCelebrating,
-            boardAnimatedStyle,
+            styles.floatingFooter,
+            { paddingBottom: Math.max(16, insets.bottom + 12) },
           ]}
         >
-          <GestureDetector gesture={composedGesture}>
-            <View collapsable={false} style={styles.zoomLayer}>
-              <Reanimated.View style={[styles.zoomLayer, zoomAnimatedStyle]}>
-                <Svg
-                  pointerEvents="none"
-                  width="100%"
-                  height="100%"
-                  viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
-                >
-                  {/* 1-draw-call Dotted Grid Matrix */}
-                  <Path
-                    d={levelData.dotsPathD}
-                    fill="none"
-                    stroke="#CBD5E1"
-                    strokeWidth={dotRadius * 2}
-                    strokeLinecap="round"
-                  />
+          <View style={styles.footerSlotLeft}>
+            {isZoomed && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  feedback.playTap();
+                  resetZoomTransform(true);
+                }}
+                accessibilityLabel="Reset zoom to fit board"
+                style={styles.resetZoomPill}
+              >
+                <Minimize2 size={15} color="#2589FF" strokeWidth={2.3} />
+                <Text style={styles.resetZoomText}>1.0×</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
-                  {/* Optional Hint Glow Aura */}
-                  {hintStemD !== '' && (
-                    <Path
-                      d={hintStemD}
-                      fill="none"
-                      stroke="rgba(37, 137, 255, 0.25)"
-                      strokeWidth={strokeWidth + 8}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
-
-                  {/* Batched White Halo Backing for All Resting Arrows */}
-                  {haloD !== '' && (
-                    <Path
-                      d={haloD}
-                      fill="none"
-                      stroke="#FFFFFF"
-                      strokeWidth={haloWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      opacity={0.9}
-                    />
-                  )}
-
-                  {/* Batched Normal Resting Arrows (Stems + Heads) */}
-                  {blackStemD !== '' && (
-                    <Path
-                      d={blackStemD}
-                      fill="none"
-                      stroke="#0F172A"
-                      strokeWidth={strokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
-                  {blackHeadD !== '' && (
-                    <Path
-                      d={blackHeadD}
-                      fill="#0F172A"
-                      stroke="#0F172A"
-                      strokeWidth={headStrokeWidth}
-                      strokeLinejoin="round"
-                    />
-                  )}
-
-                  {/* Batched Permanently-Blocked Red Resting Arrows (Stems + Heads) */}
-                  {redStemD !== '' && (
-                    <Path
-                      d={redStemD}
-                      fill="none"
-                      stroke={BLOCKED_RED}
-                      strokeWidth={strokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
-                  {redHeadD !== '' && (
-                    <Path
-                      d={redHeadD}
-                      fill={BLOCKED_RED}
-                      stroke={BLOCKED_RED}
-                      strokeWidth={headStrokeWidth}
-                      strokeLinejoin="round"
-                    />
-                  )}
-
-                  {/* Hinted Resting Arrow Highlight (Stem + Head) */}
-                  {hintStemD !== '' && (
-                    <Path
-                      d={hintStemD}
-                      fill="none"
-                      stroke={ACTIVE_BLUE}
-                      strokeWidth={strokeWidth}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  )}
-                  {hintHeadD !== '' && (
-                    <Path
-                      d={hintHeadD}
-                      fill={ACTIVE_BLUE}
-                      stroke={ACTIVE_BLUE}
-                      strokeWidth={headStrokeWidth}
-                      strokeLinejoin="round"
-                    />
-                  )}
-
-                  {/* Active UI-thread Reanimated Runners (mounted ONLY while moving) */}
-                  {animatingArrows.map((arrow) => {
-                    const geom = levelData.geomById.get(arrow.id);
-                    if (!geom || arrow.state === 'idle') return null;
-                    const restColor = arrow.isBlocked
-                      ? BLOCKED_RED
-                      : arrow.id === hintTargetId
-                        ? ACTIVE_BLUE
-                        : '#0F172A';
-                    return (
-                      <ActiveArrowRunner
-                        key={arrow.id}
-                        id={arrow.id}
-                        mode={arrow.state}
-                        isBlocked={Boolean(arrow.isBlocked)}
-                        restColor={restColor}
-                        strokeWidth={strokeWidth}
-                        arrowTipScale={arrowTipScale}
-                        cellStep={cellStep}
-                        bumpDistancePx={arrow.bumpDistancePx}
-                        bumpDurationMs={arrow.bumpDurationMs}
-                        geom={geom}
-                        showHintHalo={
-                          arrow.id === hintTargetId ||
-                          (arrow.state === 'escaping' && !arrow.isBlocked)
-                        }
-                        onEscapeComplete={handleEscapeComplete}
-                        onBlockedComplete={handleBlockedComplete}
-                        onPenaltyComplete={handlePenaltyComplete}
-                      />
-                    );
-                  })}
-
-                  {/* Collision ripple highlight at obstructing cell */}
-                  {impactFlash && (() => {
-                    const center = cellCenter(impactFlash.pt, cellStep);
-                    return (
-                      <Circle
-                        key={impactFlash.key}
-                        cx={center.x}
-                        cy={center.y}
-                        r={Math.max(12, cellStep * 0.38)}
-                        fill="rgba(239, 68, 68, 0.14)"
-                        stroke="#EF4444"
-                        strokeWidth={2.5}
-                      />
-                    );
-                  })()}
-                </Svg>
-              </Reanimated.View>
+          <TouchableOpacity
+            activeOpacity={0.88}
+            onPress={handleUseHint}
+            accessibilityLabel={`Use hint (${hints} remaining)`}
+            style={[
+              styles.hintFab,
+              hintTargetId ? styles.hintFabActive : styles.hintFabDefault,
+            ]}
+          >
+            <Lightbulb size={24} color={hints > 0 ? '#2589FF' : '#94A3B8'} />
+            <View style={styles.hintBadge}>
+              <Text style={styles.hintBadgeText}>{hints}</Text>
             </View>
-          </GestureDetector>
-        </Reanimated.View>
+          </TouchableOpacity>
+
+          <View style={styles.footerSlotRight} />
+        </View>
       </View>
 
       {/* Celebratory Confetti Overlay */}
       <ConfettiBurst triggerKey={confettiKey} />
-
-      {/* Bottom Floating Hint Control */}
-      <View style={styles.footer}>
-        <TouchableOpacity
-          activeOpacity={0.88}
-          onPress={handleUseHint}
-          accessibilityLabel={`Use hint (${hints} remaining)`}
-          style={[
-            styles.hintFab,
-            hintTargetId ? styles.hintFabActive : styles.hintFabDefault,
-          ]}
-        >
-          <Lightbulb size={24} color={hints > 0 ? '#2589FF' : '#94A3B8'} />
-          <View style={styles.hintBadge}>
-            <Text style={styles.hintBadgeText}>{hints}</Text>
-          </View>
-        </TouchableOpacity>
-      </View>
 
       {/* Level Complete Modal */}
       <Modal
@@ -1015,9 +1250,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F8FC',
+  },
+  hudChrome: {
+    backgroundColor: '#F5F8FC',
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    justifyContent: 'space-between',
+    paddingTop: 6,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(226, 232, 240, 0.85)',
+    zIndex: 10,
   },
   header: {
     flexDirection: 'row',
@@ -1081,41 +1322,62 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  boardOuter: {
+  playfieldWrap: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-  },
-  boardCard: {
     width: '100%',
-    maxWidth: 368,
-    aspectRatio: 1,
-    borderRadius: 24,
     backgroundColor: '#FFFFFF',
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.85)',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.09,
-    shadowRadius: 24,
-    elevation: 6,
   },
-  boardCardCelebrating: {
-    borderWidth: 2,
-    borderColor: 'rgba(52, 211, 153, 0.75)',
-    shadowColor: '#10B981',
-    shadowOpacity: 0.25,
+  playfieldCelebrating: {
+    backgroundColor: '#F6FEF9',
   },
-  zoomLayer: {
+  canvasContainer: {
+    flex: 1,
     width: '100%',
     height: '100%',
   },
-  footer: {
+  skiaCanvas: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  floatingFooter: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 0,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingBottom: 8,
+    justifyContent: 'space-between',
+  },
+  footerSlotLeft: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  footerSlotRight: {
+    flex: 1,
+  },
+  resetZoomPill: {
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(203, 213, 225, 0.9)',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  resetZoomText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+    fontVariant: ['tabular-nums'],
   },
   hintFab: {
     position: 'relative',
