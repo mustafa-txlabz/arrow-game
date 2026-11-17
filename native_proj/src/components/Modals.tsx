@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import {
+  Linking,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -9,14 +11,27 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   Check,
+  ChevronRight,
+  Database,
+  FileText,
   Gift,
+  HelpCircle,
   Lightbulb,
   Music,
+  ShieldCheck,
   Smartphone,
   Volume2,
   X,
 } from 'lucide-react-native';
 import type { GameSettings } from '../types/game';
+
+// Replace '#' with your deployed Vercel URLs after hosting public/*.html
+const LEGAL_LINKS = [
+  { key: 'privacy', label: 'Privacy Policy', href: '#', icon: 'privacy' },
+  { key: 'terms', label: 'Terms of Service', href: '#', icon: 'terms' },
+  { key: 'safety', label: 'Data Safety', href: '#', icon: 'safety' },
+  { key: 'support', label: 'Support & Help', href: '#', icon: 'support' },
+] as const;
 
 interface SettingsModalProps {
   open: boolean;
@@ -53,7 +68,7 @@ export function SettingsModal({
       }}
     >
       <View style={styles.backdrop}>
-        <View style={styles.card}>
+        <View style={[styles.card, styles.settingsCard]}>
           <View style={styles.settingsHeader}>
             <Text style={styles.modalTitle}>Settings</Text>
             <TouchableOpacity
@@ -68,104 +83,147 @@ export function SettingsModal({
             </TouchableOpacity>
           </View>
 
-          <View style={styles.rowsContainer}>
-            {/* Audio SFX */}
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => toggle('sfx')}
-              style={styles.settingRow}
-            >
-              <View style={styles.rowLeft}>
-                <Volume2 size={20} color="#2589FF" />
-                <Text style={styles.rowLabel}>Audio SFX</Text>
-              </View>
-              <View
-                style={[
-                  styles.switchTrack,
-                  settings.sfx
-                    ? { backgroundColor: '#2589FF', alignItems: 'flex-end' }
-                    : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
-                ]}
-              >
-                <View style={styles.switchThumb} />
-              </View>
-            </TouchableOpacity>
-
-            {/* Ambient Music */}
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => toggle('music')}
-              style={styles.settingRow}
-            >
-              <View style={styles.rowLeft}>
-                <Music size={20} color="#10B981" />
-                <Text style={styles.rowLabel}>Ambient Music</Text>
-              </View>
-              <View
-                style={[
-                  styles.switchTrack,
-                  settings.music
-                    ? { backgroundColor: '#10B981', alignItems: 'flex-end' }
-                    : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
-                ]}
-              >
-                <View style={styles.switchThumb} />
-              </View>
-            </TouchableOpacity>
-
-            {/* Haptics */}
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => toggle('haptics')}
-              style={styles.settingRow}
-            >
-              <View style={styles.rowLeft}>
-                <Smartphone size={20} color="#F43F5E" />
-                <Text style={styles.rowLabel}>Haptics</Text>
-              </View>
-              <View
-                style={[
-                  styles.switchTrack,
-                  settings.haptics
-                    ? { backgroundColor: '#F43F5E', alignItems: 'flex-end' }
-                    : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
-                ]}
-              >
-                <View style={styles.switchThumb} />
-              </View>
-            </TouchableOpacity>
-          </View>
-
-          {/* Inline Reset Confirmation */}
-          <View style={styles.resetDivider}>
-            {!confirmReset ? (
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            showsHorizontalScrollIndicator={false}
+            overScrollMode="never"
+            bounces={false}
+            contentContainerStyle={styles.settingsScrollContent}
+          >
+            <View style={styles.rowsContainer}>
+              {/* Audio SFX */}
               <TouchableOpacity
-                onPress={() => setConfirmReset(true)}
-                style={styles.resetTrigger}
+                activeOpacity={0.85}
+                onPress={() => toggle('sfx')}
+                style={styles.settingRow}
               >
-                <Text style={styles.resetTriggerText}>Reset Saved Progress</Text>
+                <View style={styles.rowLeft}>
+                  <Volume2 size={20} color="#2589FF" />
+                  <Text style={styles.rowLabel}>Audio SFX</Text>
+                </View>
+                <View
+                  style={[
+                    styles.switchTrack,
+                    settings.sfx
+                      ? { backgroundColor: '#2589FF', alignItems: 'flex-end' }
+                      : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
+                  ]}
+                >
+                  <View style={styles.switchThumb} />
+                </View>
               </TouchableOpacity>
-            ) : (
-              <View style={styles.confirmRow}>
-                <TouchableOpacity
-                  onPress={() => setConfirmReset(false)}
-                  style={styles.cancelBtn}
+
+              {/* Ambient Music */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => toggle('music')}
+                style={styles.settingRow}
+              >
+                <View style={styles.rowLeft}>
+                  <Music size={20} color="#10B981" />
+                  <Text style={styles.rowLabel}>Ambient Music</Text>
+                </View>
+                <View
+                  style={[
+                    styles.switchTrack,
+                    settings.music
+                      ? { backgroundColor: '#10B981', alignItems: 'flex-end' }
+                      : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
+                  ]}
                 >
-                  <Text style={styles.cancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => {
-                    onResetProgress();
-                    setConfirmReset(false);
-                    onClose();
-                  }}
-                  style={styles.confirmResetBtn}
+                  <View style={styles.switchThumb} />
+                </View>
+              </TouchableOpacity>
+
+              {/* Haptics */}
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => toggle('haptics')}
+                style={styles.settingRow}
+              >
+                <View style={styles.rowLeft}>
+                  <Smartphone size={20} color="#F43F5E" />
+                  <Text style={styles.rowLabel}>Haptics</Text>
+                </View>
+                <View
+                  style={[
+                    styles.switchTrack,
+                    settings.haptics
+                      ? { backgroundColor: '#F43F5E', alignItems: 'flex-end' }
+                      : { backgroundColor: '#CBD5E1', alignItems: 'flex-start' },
+                  ]}
                 >
-                  <Text style={styles.confirmResetText}>Confirm Reset</Text>
-                </TouchableOpacity>
+                  <View style={styles.switchThumb} />
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            {/* Legal & Support Section */}
+            <View style={styles.legalSection}>
+              <Text style={styles.sectionHeading}>Legal &amp; Support</Text>
+              <View style={styles.legalList}>
+                {LEGAL_LINKS.map((item) => (
+                  <TouchableOpacity
+                    key={item.key}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      if (item.href !== '#') {
+                        Linking.openURL(item.href).catch(() => {});
+                      }
+                    }}
+                    style={styles.legalRow}
+                  >
+                    <View style={styles.rowLeft}>
+                      {item.icon === 'privacy' ? (
+                        <ShieldCheck size={18} color="#2589FF" />
+                      ) : item.icon === 'terms' ? (
+                        <FileText size={18} color="#64748B" />
+                      ) : item.icon === 'safety' ? (
+                        <Database size={18} color="#10B981" />
+                      ) : (
+                        <HelpCircle size={18} color="#F59E0B" />
+                      )}
+                      <Text style={styles.legalLabel}>{item.label}</Text>
+                    </View>
+                    <ChevronRight size={16} color="#94A3B8" />
+                  </TouchableOpacity>
+                ))}
               </View>
-            )}
-          </View>
+            </View>
+
+            {/* Inline Reset Confirmation */}
+            <View style={styles.resetDivider}>
+              {!confirmReset ? (
+                <TouchableOpacity
+                  onPress={() => setConfirmReset(true)}
+                  style={styles.resetTrigger}
+                >
+                  <Text style={styles.resetTriggerText}>Reset Saved Progress</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.confirmRow}>
+                  <TouchableOpacity
+                    onPress={() => setConfirmReset(false)}
+                    style={styles.cancelBtn}
+                  >
+                    <Text style={styles.cancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => {
+                      onResetProgress();
+                      setConfirmReset(false);
+                      onClose();
+                    }}
+                    style={styles.confirmResetBtn}
+                  >
+                    <Text style={styles.confirmResetText}>Confirm Reset</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
+            <Text style={styles.versionText}>Arrow Escape · v1.0.0</Text>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -313,6 +371,13 @@ const styles = StyleSheet.create({
     shadowRadius: 28,
     elevation: 10,
   },
+  settingsCard: {
+    maxHeight: '86%',
+    paddingBottom: 18,
+  },
+  settingsScrollContent: {
+    paddingTop: 4,
+  },
   centeredCard: {
     alignItems: 'center',
   },
@@ -320,6 +385,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 8,
   },
   closeRow: {
     width: '100%',
@@ -338,11 +404,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   rowsContainer: {
-    marginTop: 20,
-    gap: 12,
+    marginTop: 8,
+    gap: 10,
   },
   settingRow: {
-    height: 52,
+    height: 50,
     borderRadius: 16,
     backgroundColor: '#F5F8FC',
     borderWidth: 1,
@@ -375,11 +441,43 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: '#FFFFFF',
   },
-  resetDivider: {
-    marginTop: 20,
+  legalSection: {
+    marginTop: 18,
     borderTopWidth: 1,
     borderTopColor: '#F1F5F9',
-    paddingTop: 16,
+    paddingTop: 14,
+  },
+  sectionHeading: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  legalList: {
+    gap: 8,
+  },
+  legalRow: {
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.75)',
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  legalLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  resetDivider: {
+    marginTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    paddingTop: 12,
   },
   resetTrigger: {
     paddingVertical: 8,
@@ -420,6 +518,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  versionText: {
+    marginTop: 8,
+    textAlign: 'center',
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#94A3B8',
   },
   giftBadge: {
     width: 56,

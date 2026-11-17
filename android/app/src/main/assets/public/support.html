@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F5F8FC" />
+    <title>Support &amp; Data Deletion — Arrow Escape</title>
+    <meta
+      name="description"
+      content="Player Support, Gameplay FAQ, and Data Deletion instructions for Arrow Escape (com.arrowescape.game)."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #F5F8FC;
+        --surface: #FFFFFF;
+        --surface-soft: #EAF0F8;
+        --text: #0F172A;
+        --text-muted: #475569;
+        --text-subtle: #64748B;
+        --border: #E2E8F0;
+        --blue: #2589FF;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.68;
+        -webkit-font-smoothing: antialiased;
+      }
+      .shell {
+        max-width: 820px;
+        margin: 0 auto;
+        padding: 28px 20px 64px;
+      }
+      .topbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-decoration: none;
+        color: var(--text);
+      }
+      .brand-mark {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 6px 16px -6px rgba(15, 23, 42, 0.1);
+      }
+      .brand-name {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 800;
+        font-size: 18px;
+        letter-spacing: 0.04em;
+      }
+      .brand-name span {
+        color: var(--blue);
+      }
+      .nav-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 18px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .nav-links a {
+        color: var(--text-muted);
+        text-decoration: none;
+        padding-bottom: 2px;
+        border-bottom: 2px solid transparent;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.active {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+      }
+      .doc-header {
+        margin-top: 32px;
+      }
+      .doc-meta {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-subtle);
+      }
+      h1 {
+        font-family: 'Outfit', sans-serif;
+        font-size: clamp(28px, 4vw, 38px);
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        margin: 8px 0 10px;
+      }
+      .lead {
+        font-size: 16px;
+        color: var(--text-muted);
+        margin: 0;
+        max-width: 66ch;
+      }
+      .card {
+        margin-top: 24px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        padding: 28px 26px;
+      }
+      section + section {
+        margin-top: 28px;
+        padding-top: 24px;
+        border-top: 1px solid #F1F5F9;
+      }
+      h2 {
+        font-family: 'Outfit', sans-serif;
+        font-size: 20px;
+        font-weight: 700;
+        margin: 0 0 10px;
+      }
+      h3 {
+        font-family: 'Outfit', sans-serif;
+        font-size: 16px;
+        font-weight: 700;
+        margin: 16px 0 4px;
+        color: var(--text);
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+      ol,
+      ul {
+        margin: 8px 0 12px;
+        padding-left: 20px;
+        color: var(--text-muted);
+        font-size: 15px;
+      }
+      li + li {
+        margin-top: 6px;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        background: var(--surface-soft);
+        padding: 2px 6px;
+        border-radius: 6px;
+        color: var(--text);
+      }
+      .footer {
+        margin-top: 36px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 13px;
+        color: var(--text-subtle);
+      }
+      .footer a {
+        color: var(--blue);
+        text-decoration: none;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a href="privacy-policy.html" class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 168 168" width="28" height="28">
+              <circle cx="34" cy="34" r="6" fill="#CBD5E1" />
+              <circle cx="134" cy="34" r="6" fill="#CBD5E1" />
+              <circle cx="34" cy="134" r="6" fill="#CBD5E1" />
+              <circle cx="134" cy="134" r="6" fill="#CBD5E1" />
+              <path d="M 32 104 L 32 46 Q 32 34 44 34 L 112 34" fill="none" stroke="#2589FF" stroke-width="12" stroke-linecap="round" />
+              <path d="M 134 34 L 104 18 L 111 34 L 104 50 Z" fill="#2589FF" />
+              <path d="M 134 74 L 134 122 Q 134 134 122 134 L 54 134" fill="none" stroke="#10B981" stroke-width="12" stroke-linecap="round" />
+              <path d="M 32 134 L 62 118 L 55 134 L 62 150 Z" fill="#10B981" />
+            </svg>
+          </div>
+          <span class="brand-name">ARROW <span>ESCAPE</span></span>
+        </a>
+
+        <nav class="nav-links" aria-label="Legal navigation">
+          <a href="privacy-policy.html">Privacy Policy</a>
+          <a href="terms-of-service.html">Terms of Service</a>
+          <a href="data-safety.html">Data Safety</a>
+          <a href="support.html" class="active">Support</a>
+        </nav>
+      </header>
+
+      <div class="doc-header">
+        <div class="doc-meta">
+          Player Help Center · Arrow Escape (<code>com.arrowescape.game</code>)
+        </div>
+        <h1>Support &amp; Data Deletion</h1>
+        <p class="lead">
+          Need help with puzzle controls, hints, revives, or deleting your saved progress? Find
+          quick answers below or reach out to our team.
+        </p>
+      </div>
+
+      <article class="card">
+        <section>
+          <h2>1. Frequently Asked Questions</h2>
+
+          <h3>How do hints and free hint ads work?</h3>
+          <p>
+            Tap the lightbulb button during any level to highlight an arrow with an open escape
+            path. When your hint count reaches zero, the button displays an <strong>AD</strong>
+            badge—tapping it lets you watch a short rewarded ad to earn <strong>+1 Hint</strong>.
+            You can also earn hints from the Daily Bonus or the Home screen hint chip.
+          </p>
+
+          <h3>Can I continue if I lose all 3 hearts?</h3>
+          <p>
+            Yes. When all 3 hearts are lost, tap <strong>Watch Ad · Revive (3 Hearts)</strong> on
+            the Out of Lives menu to restore all 3 hearts and resume the puzzle from the exact
+            remaining arrows.
+          </p>
+
+          <h3>How do I zoom and pan large puzzle boards?</h3>
+          <p>
+            Pinch anywhere on the board with two fingers to zoom cleanly in vector resolution, drag
+            with one finger to pan around dense grids, and tap the floating <strong>1.0×</strong>
+            button at the bottom-left to snap back to full view.
+          </p>
+        </section>
+
+        <section>
+          <h2>2. How to Delete Your Saved Data</h2>
+          <p>
+            Arrow Escape stores all level progress, hints, daily streaks, and audio preferences
+            locally on your device rather than on external servers. You can delete all data
+            immediately using either method:
+          </p>
+          <ol>
+            <li>
+              <strong>Inside the App:</strong> Open <strong>Settings</strong> (gear icon) → tap
+              <strong>Reset Saved Progress</strong> → tap <strong>Confirm Reset</strong>.
+            </li>
+            <li>
+              <strong>Android System Settings:</strong> Go to <strong>Device Settings → Apps →
+              Arrow Escape → Storage &amp; cache → Clear storage</strong>, or uninstall the app.
+            </li>
+          </ol>
+        </section>
+
+        <section>
+          <h2>3. Contact Support</h2>
+          <p>
+            For bug reports, feedback, or Play Store support inquiries, please email us with your
+            device model and level number:
+          </p>
+          <p>
+            <strong>Email:</strong> <code>support@arrowescape.example</code> (replace with your
+            published developer support email before Play Store submission)
+          </p>
+        </section>
+      </article>
+
+      <footer class="footer">
+        <span>© 2026 Arrow Escape · Package ID: com.arrowescape.game</span>
+        <span>
+          <a href="privacy-policy.html">Privacy Policy</a> ·
+          <a href="terms-of-service.html">Terms</a> ·
+          <a href="data-safety.html">Data Safety</a>
+        </span>
+      </footer>
+    </main>
+  </body>
+</html>

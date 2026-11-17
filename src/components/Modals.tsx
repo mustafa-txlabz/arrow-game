@@ -2,14 +2,27 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Check,
+  ChevronRight,
+  Database,
+  FileText,
   Gift,
+  HelpCircle,
   Lightbulb,
   Music,
+  ShieldCheck,
   Smartphone,
   Volume2,
   X,
 } from 'lucide-react';
 import type { GameSettings } from '../types/game';
+
+// Replace '#' with your deployed Vercel URLs after hosting public/*.html
+const LEGAL_LINKS = [
+  { key: 'privacy', label: 'Privacy Policy', href: '#', icon: 'privacy' },
+  { key: 'terms', label: 'Terms of Service', href: '#', icon: 'terms' },
+  { key: 'safety', label: 'Data Safety', href: '#', icon: 'safety' },
+  { key: 'support', label: 'Support & Help', href: '#', icon: 'support' },
+] as const;
 
 interface SettingsModalProps {
   open: boolean;
@@ -42,7 +55,7 @@ export function SettingsModal({
       <motion.div
         initial={{ scale: 0.94, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="w-full max-w-[340px] rounded-3xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl"
+        className="no-scrollbar max-h-[88vh] w-full max-w-[340px] overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl"
       >
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl font-bold text-slate-900">Settings</h2>
@@ -59,12 +72,12 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="mt-5 space-y-3">
+        <div className="mt-4 space-y-2.5">
           {/* Audio SFX */}
           <button
             type="button"
             onClick={() => toggle('sfx')}
-            className="flex h-13 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
+            className="flex h-12 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
           >
             <div className="flex items-center gap-3">
               <Volume2 className="h-5 w-5 text-[#2589FF]" />
@@ -83,7 +96,7 @@ export function SettingsModal({
           <button
             type="button"
             onClick={() => toggle('music')}
-            className="flex h-13 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
+            className="flex h-12 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
           >
             <div className="flex items-center gap-3">
               <Music className="h-5 w-5 text-emerald-500" />
@@ -102,7 +115,7 @@ export function SettingsModal({
           <button
             type="button"
             onClick={() => toggle('haptics')}
-            className="flex h-13 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
+            className="flex h-12 w-full items-center justify-between rounded-2xl border border-slate-200/80 bg-[#F5F8FC] px-4"
           >
             <div className="flex items-center gap-3">
               <Smartphone className="h-5 w-5 text-rose-500" />
@@ -118,8 +131,48 @@ export function SettingsModal({
           </button>
         </div>
 
+        {/* Legal & Support Section */}
+        <div className="mt-4 border-t border-slate-100 pt-3.5">
+          <p className="mb-2 px-0.5 text-xs font-bold text-slate-500">
+            Legal &amp; Support
+          </p>
+          <div className="space-y-2">
+            {LEGAL_LINKS.map((item) => {
+              const isExternal = item.href !== '#';
+              return (
+                <a
+                  key={item.key}
+                  href={item.href}
+                  target={isExternal ? '_blank' : undefined}
+                  rel={isExternal ? 'noopener noreferrer' : undefined}
+                  onClick={(e) => {
+                    if (!isExternal) e.preventDefault();
+                  }}
+                  className="flex h-11 w-full items-center justify-between rounded-[14px] border border-slate-200/75 bg-slate-50 px-3.5 transition-colors hover:bg-slate-100/80"
+                >
+                  <div className="flex items-center gap-3">
+                    {item.icon === 'privacy' ? (
+                      <ShieldCheck className="h-[18px] w-[18px] text-[#2589FF]" />
+                    ) : item.icon === 'terms' ? (
+                      <FileText className="h-[18px] w-[18px] text-slate-500" />
+                    ) : item.icon === 'safety' ? (
+                      <Database className="h-[18px] w-[18px] text-emerald-500" />
+                    ) : (
+                      <HelpCircle className="h-[18px] w-[18px] text-amber-500" />
+                    )}
+                    <span className="text-[13px] font-semibold text-slate-700">
+                      {item.label}
+                    </span>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </a>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Inline Reset Confirmation */}
-        <div className="mt-5 border-t border-slate-100 pt-4">
+        <div className="mt-4 border-t border-slate-100 pt-3">
           {!confirmReset ? (
             <button
               type="button"
@@ -151,6 +204,10 @@ export function SettingsModal({
             </div>
           )}
         </div>
+
+        <p className="mt-2 text-center text-[11px] font-medium text-slate-400">
+          Arrow Escape · v1.0.0
+        </p>
       </motion.div>
     </div>
   );
