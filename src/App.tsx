@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { ScreenOrientation } from '@capacitor/screen-orientation';
 import { AnimatePresence, motion } from 'motion/react';
-import { AdOverlayModal } from './components/AdOverlayModal';
+import { Loader2 } from 'lucide-react';
 import { GameplayScreen } from './components/GameplayScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { DailyBonusModal, SettingsModal } from './components/Modals';
@@ -12,6 +12,12 @@ import type {
   PlayerProgress,
   ScreenView,
 } from './types/game';
+import {
+  initializeAdMob,
+  isAdMobSupported,
+  showInterstitialAd,
+  showRewardedAd,
+} from './utils/admobService';
 import { feedback } from './utils/soundAndHaptics';
 
 const PROGRESS_STORAGE_KEY = 'arrow_escape_progress_v1';
@@ -92,18 +98,37 @@ export default function App() {
   const [settings, setSettings] = useState<GameSettings>(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dailyOpen, setDailyOpen] = useState(false);
-  const [adState, setAdState] = useState<{
-    placement: AdPlacement;
-    onRewarded: () => void;
-  } | null>(null);
+  const [adBusy, setAdBusy] = useState(false);
+  const [adNotice, setAdNotice] = useState<string | null>(null);
+
+  const adBusyRef = useRef(false);
+  const noticeTimerRef = useRef<number | null>(null);
 
   const canClaimDaily = progress.lastDailyClaimDate !== getTodayKey();
 
+  const showAdNotice = useCallback((message: string) => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    setAdNotice(message);
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      setAdNotice(null);
+    }, 3400);
+  }, []);
+
   useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
-    ScreenOrientation.lock({ orientation: 'portrait' }).catch(() => {
-      // Orientation is also locked natively in AndroidManifest.xml
-    });
+    void initializeAdMob();
+    if (Capacitor.isNativePlatform()) {
+      ScreenOrientation.lock({ orientation: 'portrait' }).catch(() => {
+        // Orientation is also locked natively in AndroidManifest.xml
+      });
+    }
+    return () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -159,12 +184,52 @@ export default function App() {
   }, []);
 
   const handleRequestAd = useCallback(
-    (placement: AdPlacement, onRewarded: () => void) => {
+    async (placement: AdPlacement, onRewarded: () => void) => {
+      if (adBusyRef.current) return;
+
       feedback.unlock();
       feedback.playTap();
-      setAdState({ placement, onRewarded });
+
+      if (placement === 'interstitial_level') {
+        if (!isAdMobSupported()) {
+          // Never block level progression in browser preview
+          onRewarded();
+          return;
+        }
+        adBusyRef.current = true;
+        setAdBusy(true);
+        try {
+          await showInterstitialAd();
+        } catch {
+          // Never block level progression on ad failure
+        } finally {
+          adBusyRef.current = false;
+          setAdBusy(false);
+          onRewarded();
+        }
+        return;
+      }
+
+      // Rewarded ad placements: NEVER grant reward unless AdMob SDK confirms reward earned
+      adBusyRef.current = true;
+      setAdBusy(true);
+      try {
+        const result = await showRewardedAd();
+        adBusyRef.current = false;
+        setAdBusy(false);
+
+        if (result.rewarded === true) {
+          onRewarded();
+        } else if (result.message) {
+          showAdNotice(result.message);
+        }
+      } catch {
+        adBusyRef.current = false;
+        setAdBusy(false);
+        showAdNotice('Ad could not be shown. No reward granted.');
+      }
     },
-    []
+    [showAdNotice]
   );
 
   const handleClaimDaily = useCallback((hintsEarned: number) => {
@@ -216,9 +281,9 @@ export default function App() {
                   feedback.playTap();
                   setSettingsOpen(true);
                 }}
-                onWatchFreeHintAd={() =>
-                  handleRequestAd('rewarded_hint', () => handleGrantHint(1))
-                }
+                onWatchFreeHintAd={() => {
+                  void handleRequestAd('rewarded_hint', () => handleGrantHint(1));
+                }}
               />
             </motion.div>
           )}
@@ -239,7 +304,9 @@ export default function App() {
                 onOpenSettings={() => setSettingsOpen(true)}
                 onConsumeHint={handleConsumeHint}
                 onGrantHint={handleGrantHint}
-                onRequestAd={handleRequestAd}
+                onRequestAd={(placement, cb) => {
+                  void handleRequestAd(placement, cb);
+                }}
                 onLevelComplete={handleLevelComplete}
               />
             </motion.div>
@@ -265,19 +332,30 @@ export default function App() {
           onClose={() => setDailyOpen(false)}
         />
 
-        <AdOverlayModal
-          visible={adState !== null}
-          placement={adState?.placement ?? null}
-          onComplete={() => {
-            const callback = adState?.onRewarded;
-            setAdState(null);
-            callback?.();
-          }}
-          onSkipOrClose={() => {
-            feedback.playTap();
-            setAdState(null);
-          }}
-        />
+        {adBusy && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-900/30 backdrop-blur-[1px]">
+            <div className="flex items-center gap-2.5 rounded-2xl bg-white px-5 py-3.5 text-sm font-bold text-slate-900 shadow-xl">
+              <Loader2 className="h-4 w-4 animate-spin text-[#2589FF]" />
+              <span>Loading ad...</span>
+            </div>
+          </div>
+        )}
+
+        <AnimatePresence>
+          {adNotice && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.18 }}
+              className="pointer-events-none absolute right-5 bottom-10 left-5 z-50 flex justify-center"
+            >
+              <div className="max-w-[340px] rounded-2xl bg-slate-900/92 px-4 py-2.5 text-center text-xs font-semibold leading-relaxed text-white shadow-lg">
+                {adNotice}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </main>
   );
