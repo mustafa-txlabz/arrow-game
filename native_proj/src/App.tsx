@@ -101,15 +101,23 @@ export default function App() {
     }, 3400);
   }, []);
 
-  // Initialize Google AdMob SDK once on startup (safe no-op in Expo Go)
+  // Clean up toast timer on unmount
   useEffect(() => {
-    void initializeAdMob();
     return () => {
       if (noticeTimerRef.current) {
         clearTimeout(noticeTimerRef.current);
       }
     };
   }, []);
+
+  // Defer Google AdMob SDK startup until after initial hydration & first frame render
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = setTimeout(() => {
+      void initializeAdMob();
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [hydrated]);
 
   // Load persisted progress and settings from AsyncStorage on startup
   useEffect(() => {

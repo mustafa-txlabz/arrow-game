@@ -71,21 +71,22 @@ function hasNativeAdMobModule(): boolean {
     return false;
   }
   try {
-    if (
-      TurboModuleRegistry &&
-      typeof TurboModuleRegistry.get === 'function' &&
-      TurboModuleRegistry.get('RNGoogleMobileAdsModule') != null
-    ) {
-      return true;
-    }
     const legacyModules = NativeModules as Record<string, unknown> | undefined;
-    if (legacyModules && legacyModules.RNGoogleMobileAdsModule != null) {
-      return true;
-    }
+    const hasTurbo =
+      TurboModuleRegistry && typeof TurboModuleRegistry.get === 'function';
+
+    const hasAdsModule =
+      (hasTurbo && TurboModuleRegistry.get('RNGoogleMobileAdsModule') != null) ||
+      Boolean(legacyModules?.RNGoogleMobileAdsModule);
+
+    const hasAppModule =
+      (hasTurbo && TurboModuleRegistry.get('RNAppModule') != null) ||
+      Boolean(legacyModules?.RNAppModule);
+
+    return hasAdsModule && hasAppModule;
   } catch {
     return false;
   }
-  return false;
 }
 
 function getAdMobSDK(): GoogleMobileAdsSDK | null {

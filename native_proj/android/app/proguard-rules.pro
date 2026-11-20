@@ -7,8 +7,26 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# react-native-reanimated
+# react-native-reanimated & react-native-worklets
 -keep class com.swmansion.reanimated.** { *; }
--keep class com.facebook.react.turbomodule.** { *; }
+-keep class com.swmansion.worklets.** { *; }
+-keep class com.swmansion.gesturehandler.** { *; }
 
-# Add any project specific keep options here:
+# @shopify/react-native-skia (JNI classes looked up directly from librnskia.so)
+-keep class com.reactnative.skia.** { *; }
+-keep class com.shopify.reactnative.skia.** { *; }
+
+# react-native-google-mobile-ads & Google Mobile Ads SDK
+-keep class io.invertase.googlemobileads.** { *; }
+-keep class com.google.android.gms.ads.** { *; }
+
+# react-native-svg & Expo native modules
+-keep class com.horcrux.svg.** { *; }
+-keep class expo.modules.** { *; }
+
+# React Native New Architecture / TurboModules / Fabric / Codegen specs
+-keep class com.facebook.react.turbomodule.** { *; }
+-keep class com.facebook.react.fabric.** { *; }
+-keep class com.facebook.fbreact.specs.** { *; }
+-keep class com.facebook.jni.** { *; }
+
